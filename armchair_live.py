@@ -107,6 +107,21 @@ class Transcriber:
         ld = os.environ.get('LD_LIBRARY_PATH', '')
         os.environ['LD_LIBRARY_PATH'] = f"{cuda}:{cudnn}:{nvrtc}:{ld}"
 
+        # Preload CUDA libraries before importing faster_whisper.
+        # Setting LD_LIBRARY_PATH after process start isn't enough — the
+        # dynamic linker caches its search path at startup. ctypes.WAIT
+        # forces the linker to pick up the new path.
+        import ctypes
+        for lib in ['libcublas.so.12', 'libcublasLt.so.12', 'libcudnn.so.8', 'libcudart.so.12']:
+            for d in [cuda, cudnn, nvrtc]:
+                path = os.path.join(d, lib)
+                if os.path.exists(path):
+                    try:
+                        ctypes.CDLL(path)
+                    except OSError:
+                        pass
+                    break
+
         from faster_whisper import WhisperModel
         log("STT", f"Loading {model_name} ({device}/{compute_type})...")
         self.model = WhisperModel(model_name, device=device, compute_type=compute_type)
