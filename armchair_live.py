@@ -170,6 +170,7 @@ def main():
                               "float16" if args.whisper_device == "cuda" else "int8")
 
     transcript_buffer = []
+    last_minute_stamp = None
 
     log("ARMCHAIR", "=" * 60)
     log("ARMCHAIR", "AGENT IN THE ARMCHAIR — VTT")
@@ -234,9 +235,12 @@ def main():
         except:
             pass
 
-        # Append to transcript buffer with timestamp
-        entry = f"[{time.strftime('%H:%M:%S')}] {text}"
-        transcript_buffer.append(entry)
+        # Append to transcript buffer — timestamp once per minute
+        current_minute = time.strftime('%H:%M')
+        if current_minute != last_minute_stamp:
+            transcript_buffer.append(f"--- {current_minute} ---")
+            last_minute_stamp = current_minute
+        transcript_buffer.append(text)
 
         # Keep last 500 lines in memory
         if len(transcript_buffer) > 500:
