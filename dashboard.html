@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent In The Armchair</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0a0a0a; color: #e0e0e0; font-family: 'Segoe UI', 'Helvetica Neue', sans-serif; padding: 20px; max-width: 900px; margin: 0 auto; }
+.header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+.header h1 { font-size: 22px; font-weight: 600; color: #fff; }
+.header .emoji { font-size: 28px; }
+.status-bar { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; padding: 10px 16px; background: #111; border: 1px solid #222; border-radius: 6px; }
+.status-dot { width: 10px; height: 10px; border-radius: 50%; background: #333; transition: all 0.3s; }
+.status-dot.live { background: #00cc44; box-shadow: 0 0 8px rgba(0,204,68,0.6); }
+.status-text { font-size: 13px; color: #888; }
+.latency { font-size: 12px; color: #666; margin-left: auto; }
+.latency span { color: #00cc44; font-weight: 600; }
+.section { margin-top: 12px; border: 1px solid #1a2a1a; border-radius: 6px; background: #0d140d; overflow: hidden; }
+.section-header { padding: 10px 16px; background: #111811; border-bottom: 1px solid #1a2a1a; display: flex; align-items: center; justify-content: space-between; }
+.section-header h2 { color: #00cc44; font-size: 12px; text-transform: uppercase; letter-spacing: 2px; font-weight: 600; }
+.copy-btn { background: none; border: 1px solid #333; color: #888; font-size: 11px; padding: 4px 10px; border-radius: 4px; cursor: pointer; transition: all 0.2s; }
+.copy-btn:hover { border-color: #00cc44; color: #00cc44; }
+#transcript { color: #c0d0c0; font-size: 14px; white-space: pre-wrap; max-height: 500px; overflow-y: auto; padding: 16px; line-height: 1.6; font-family: 'SF Mono', 'Consolas', monospace; }
+#transcript .timestamp { color: #555; font-size: 12px; }
+.new-line { animation: highlight 1s ease-out; }
+@keyframes highlight { 0% { background-color: rgba(0,204,68,0.15); } 100% { background-color: transparent; } }
+.footer { margin-top: 16px; font-size: 11px; color: #444; text-align: center; }
+</style>
+</head>
+<body>
+
+<div class="header">
+<span class="emoji">🪑</span>
+<h1>Agent In The Armchair</h1>
+</div>
+
+<div class="status-bar">
+<div class="status-dot" id="statusDot"></div>
+<div class="status-text" id="statusText">Waiting for audio...</div>
+<div class="latency" id="latency"></div>
+</div>
+
+<div class="section">
+<div class="section-header">
+<h2>📝 Live Transcript</h2>
+<button class="copy-btn" onclick="copyTranscript()">Copy All</button>
+</div>
+<div id="transcript">Waiting for audio...</div>
+</div>
+
+<div class="footer">
+Agent In The Armchair — VTT pipeline • Whisper (CUDA) • Invisible to Teams
+</div>
+
+<script>
+let lastTranscript = '';
+
+async function update() {
+    try {
+        const r = await fetch('/api/status');
+        const data = await r.json();
+
+        // Latency
+        if (data.latency) {
+            document.getElementById('latency').innerHTML = `Transcribe: <span>${data.latency}</span>`;
+        }
+
+        // Transcript
+        if (data.transcript && data.transcript !== lastTranscript) {
+            const isNew = lastTranscript !== '';
+            lastTranscript = data.transcript;
+
+            // Format with timestamp highlighting
+            const lines = data.transcript.split('\n');
+            const formatted = lines.map(line => {
+                const match = line.match(/^\[(\d{2}:\d{2}:\d{2})\]\s(.*)$/);
+                if (match) {
+                    return `<span class="timestamp">[${match[1]}]</span> ${match[2]}`;
+                }
+                return line;
+            }).join('\n');
+
+            document.getElementById('transcript').innerHTML = formatted;
+
+            // Highlight new lines
+            if (isNew) {
+                const div = document.getElementById('transcript');
+                const lastChild = div.lastElementChild;
+                if (lastChild) {
+                    lastChild.classList.add('new-line');
+                }
+            }
+
+            // Auto-scroll to bottom
+            const t = document.getElementById('transcript');
+            t.scrollTop = t.scrollHeight;
+
+            // Update status
+            document.getElementById('statusDot').className = 'status-dot live';
+            document.getElementById('statusText').textContent = 'Listening — transcribing';
+        } else if (!data.transcript) {
+            document.getElementById('statusDot').className = 'status-dot';
+            document.getElementById('statusText').textContent = 'Waiting for audio...';
+        }
+    } catch(e) {}
+}
+
+function copyTranscript() {
+    const text = document.getElementById('transcript').innerText;
+    navigator.clipboard.writeText(text).then(() => {
+        const btn = document.querySelector('.copy-btn');
+        const original = btn.textContent;
+        btn.textContent = 'Copied!';
+        btn.style.color = '#00cc44';
+        setTimeout(() => {
+            btn.textContent = original;
+            btn.style.color = '';
+        }, 1500);
+    });
+}
+
+setInterval(update, 1000);
+update();
+</script>
+</body>
+</html>
