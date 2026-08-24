@@ -282,8 +282,6 @@ class Diarizer:
         import torch
         import numpy as np
 
-        torch.backends.cudnn.enabled = False
-        log("DIAR", "cuDNN disabled (avoids cu12/cu13 version conflict)")
 
         token = os.environ.get('HF_TOKEN', '')
         if not token:
