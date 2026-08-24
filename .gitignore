@@ -4,4 +4,4 @@ __pycache__/
 case_context.py
 transcripts/
 *.raw
-*.wav
+*.wav!voices/*.wav

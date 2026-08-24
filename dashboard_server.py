@@ -131,7 +131,7 @@ if __name__ == '__main__':
         with open(AGENT_CONFIG_FILE, 'w') as f:
             json.dump({
                 'name': 'Agricola',
-                'voice': 'en_US-norman-medium',
+                'voice': 'en_GB-alan-medium',
                 'llm_model': 'deepseek-v3.2:cloud',
                 'persona': 'You are {agent_name}, a strategic advisor. Speak only when directly addressed.'
             }, f)

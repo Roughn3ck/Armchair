@@ -73,7 +73,7 @@ LLM_MAX_TOKENS = 150
 LLM_TEMPERATURE = 0.7
 
 # TTS config (Piper)
-TTS_VOICE_DEFAULT = "en_US-norman-medium"
+TTS_VOICE_DEFAULT = "en_GB-alan-medium"
 PIPER_BIN = "/home/krisr/.local/bin/piper"
 PIPER_MODELS_DIR = "/home/krisr/.local/share/piper"
 TTS_OUTPUT_DIR = "/tmp/armchair/tts"
