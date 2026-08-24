@@ -140,7 +140,7 @@ if __name__ == '__main__':
             json.dump({
                 'name': 'Agricola',
                 'voice': 'en_GB-alan-medium',
-                'llm_model': 'deepseek-v3.2:cloud',
+                'llm_model': 'deepseek-v4-flash:cloud',
                 'persona': 'You are {agent_name}, a strategic advisor. Speak only when directly addressed.'
             }, f)
     server = http.server.HTTPServer(('0.0.0.0', 8765), ArmchairHandler)

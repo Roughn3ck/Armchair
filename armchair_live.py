@@ -65,7 +65,7 @@ DIARIZE_INTERVAL = 10  # Re-run diarization every N seconds
 DIAR_BUFFER_SECONDS = 16  # Rolling buffer for diarization
 
 # LLM config (Ollama)
-LLM_MODEL_DEFAULT = "deepseek-v3.2:cloud"
+LLM_MODEL_DEFAULT = "deepseek-v4-flash:cloud"
 LLM_API_HOST = "localhost"
 LLM_API_PORT = 11434
 LLM_API_PATH = "/api/chat"
