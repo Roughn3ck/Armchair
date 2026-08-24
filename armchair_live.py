@@ -222,11 +222,7 @@ class Transcriber:
         os.environ['LD_LIBRARY_PATH'] = f"{cuda}:{cudnn}:{nvrtc}:{ld}"
 
         import ctypes
-        # Only preload cuBLAS (needed by faster-whisper/ctranslate2).
-        # Do NOT preload cuDNN — PyTorch 2.13 bundles its own cuDNN (cu13)
-        # and preloading the cu12 version causes CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH
-        # when pyannote-audio runs on CUDA.
-        for lib in ['libcublas.so.12', 'libcublasLt.so.12', 'libcudart.so.12']:
+        for lib in ['libcublas.so.12', 'libcublasLt.so.12', 'libcudnn.so.9', 'libcudart.so.12']:
             for d in [cuda, cudnn, nvrtc]:
                 path = os.path.join(d, lib)
                 if os.path.exists(path):
