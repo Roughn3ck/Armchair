@@ -597,7 +597,9 @@ class Speaker:
 
         timestamp = int(time.time() * 1000)
         wav_path = f"{TTS_OUTPUT_DIR}/agent_{timestamp}.wav"
-        win_path = f"B:\\armchair_tmp\\agent_{timestamp}.wav"
+        # WSL path for copying, Windows path for PowerShell
+        wsl_playback = f"{TTS_PLAYBACK_DIR}/agent_{timestamp}.wav"
+        win_playback = f"B:\\armchair_tmp\\agent_{timestamp}.wav"
 
         log("TTS", f"Generating: piper={PIPER_BIN}, voice={self.voice_path}")
         log("TTS", f"Text: {text[:100]}")
@@ -618,16 +620,18 @@ class Speaker:
                 log("TTS", f"Piper stderr: {result.stderr[:200]}")
                 return
 
-            shutil.copy2(wav_path, win_path)
+            # Copy to Windows-accessible path using WSL path
+            shutil.copy2(wav_path, wsl_playback)
 
-            if not os.path.exists(win_path):
-                log("TTS", f"ERROR: WAV not copied to {win_path}")
+            if not os.path.exists(wsl_playback):
+                log("TTS", f"ERROR: WAV not copied to {wsl_playback}")
                 return
 
+            log("TTS", f"WAV ready: {win_playback}")
             powershell = '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe'
             play_cmd = [
                 powershell, '-c',
-                f"(New-Object System.Media.SoundPlayer '{win_path}').PlaySync()"
+                f"(New-Object System.Media.SoundPlayer '{win_playback}').PlaySync()"
             ]
             log("TTS", f"{agent_name}: {text[:80]}...")
             result = subprocess.run(play_cmd, capture_output=True, text=True, timeout=30)
@@ -641,7 +645,7 @@ class Speaker:
         except Exception as e:
             log("TTS", f"Error: {e}")
         finally:
-            for p in [wav_path, win_path]:
+            for p in [wav_path, wsl_playback]:
                 if os.path.exists(p):
                     os.remove(p)
 
