@@ -4,4 +4,12 @@ __pycache__/
 case_context.py
 transcripts/
 *.raw
-*.wav!voices/*.wav
+*.wav
+
+# Identity folder — don't push real agent data
+Identity/*.md
+Identity/*.txt
+Identity/memory/
+!Identity/README.md
+!Identity/example/
+!Identity/example/*
