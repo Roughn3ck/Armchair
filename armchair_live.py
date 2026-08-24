@@ -58,7 +58,7 @@ WHISPER_COMPUTE = "float16"
 # VAD config (Silero)
 VAD_THRESHOLD = 0.5    # Speech probability threshold
 VAD_MIN_SPEECH = 0.25   # Min seconds of speech to trigger
-VAD_MAX_BUFFER = 30    # Max seconds of audio in Whisper buffer
+VAD_MAX_BUFFER = 10    # Max seconds of audio in Whisper buffer
 
 # Diarization config
 DIARIZE_INTERVAL = 10  # Re-run diarization every N seconds
@@ -344,23 +344,26 @@ class StreamingTranscriber:
             if not current_text:
                 return "", self.committed_text
 
-            # Local agreement: only commit text that is a prefix of current transcription
-            # (appears in both the previous and current transcription)
+            # Simple local agreement: if the new transcription starts with the
+            # old committed text, the prefix is confirmed — output the new part.
+            # If it doesn't match, the buffer content shifted — replace.
             new_text = ""
 
-            if self.last_committed and current_text.startswith(self.last_committed):
-                # The previous committed text is confirmed — extract the new part
+            if not self.last_committed:
+                # First transcription
+                self.committed_text = current_text
+                self.last_committed = current_text
+                new_text = current_text
+            elif current_text.startswith(self.last_committed):
+                # Prefix matches — new text is the difference
                 new_text = current_text[len(self.last_committed):].strip()
                 self.committed_text = current_text
-            elif not self.last_committed:
-                # First transcription — commit all
-                self.committed_text = current_text
-                new_text = current_text
+                self.last_committed = current_text
             else:
-                # Text changed — update but don't commit the changed part
+                # Text changed (buffer shifted) — just update, no new output
                 self.committed_text = current_text
+                self.last_committed = current_text
 
-            self.last_committed = self.committed_text
             return new_text, self.committed_text
 
         except Exception as e:
