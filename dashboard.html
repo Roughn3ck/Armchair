@@ -208,7 +208,7 @@ function updateSpeakerRows() {
             const div = document.createElement('div');
             div.className = 'speaker-row';
             div.id = 'speaker-row-' + id;
-            div.innerHTML = `<label>${id}:</label><input type="text" id="speaker-input-${id}" value="${name}" placeholder="Enter name..." onchange="saveSpeakerName('${id}', this.value)">`;
+            div.innerHTML = `<label>${id}:</label><input type="text" id="speaker-input-${id}" value="${name}" placeholder="Enter name..." onchange="saveSpeakerName('${id}', this.value)"><button class="save-btn" onclick="saveSpeakerName('${id}', document.getElementById('speaker-input-${id}').value)">Label</button>`;
             container.appendChild(div);
         }
     }
