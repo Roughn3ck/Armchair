@@ -100,6 +100,10 @@ SPEAKER_NAMES_FILE = "/tmp/armchair/speaker_names.json"
 DETECTED_SPEAKERS_FILE = "/tmp/armchair/detected_speakers.json"
 AGENT_CONFIG_FILE = "/tmp/armchair/agent_config.json"
 TTS_PLAYBACK_DIR = "/mnt/b/armchair_tmp"
+TTS_OUTPUT_DIR = "/mnt/b/armchair_tmp/tts"
+
+# Session logs — archived to Windows side
+SESSION_LOG_DIR = "/mnt/b/armchair_tmp/session_logs"
 
 # Whisper hallucination filter
 SKIP_PHRASES = {
