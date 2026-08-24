@@ -592,11 +592,15 @@ class Speaker:
 
     def speak(self, text, agent_name):
         if not text or len(text) < 3 or not self.voice_path:
+            log("TTS", f"Skipping: text={len(text) if text else 0} chars, voice={self.voice_path is not None}")
             return
 
         timestamp = int(time.time() * 1000)
         wav_path = f"{TTS_OUTPUT_DIR}/agent_{timestamp}.wav"
         win_path = f"B:\\armchair_tmp\\agent_{timestamp}.wav"
+
+        log("TTS", f"Generating: piper={PIPER_BIN}, voice={self.voice_path}")
+        log("TTS", f"Text: {text[:100]}")
 
         try:
             result = subprocess.run(
@@ -605,8 +609,13 @@ class Speaker:
                 input=text, capture_output=True, text=True, timeout=15
             )
 
+            if result.returncode != 0:
+                log("TTS", f"Piper error (rc={result.returncode}): {result.stderr[:200]}")
+
             if not os.path.exists(wav_path):
-                log("TTS", "Failed to generate audio")
+                log("TTS", f"Failed to generate audio: {wav_path}")
+                log("TTS", f"Piper stdout: {result.stdout[:200]}")
+                log("TTS", f"Piper stderr: {result.stderr[:200]}")
                 return
 
             shutil.copy2(wav_path, win_path)
