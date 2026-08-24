@@ -668,8 +668,8 @@ def main():
         with open(MODE_FILE, 'w') as f:
             f.write('listen')
 
-    # Clear state
-    for f in [TRANSCRIPT_FILE, LATENCY_FILE, DETECTED_SPEAKERS_FILE]:
+    # Clear state (fresh session — no bleed from previous runs)
+    for f in [TRANSCRIPT_FILE, LATENCY_FILE, DETECTED_SPEAKERS_FILE, SPEAKER_NAMES_FILE]:
         if os.path.exists(f):
             os.remove(f)
 
@@ -832,18 +832,36 @@ def main():
                 transcriber.clear()
                 silence_counter = 0
 
-    # Save final transcript
+    # Save session: transcript + speaker names + detected speakers + audio
     if transcript_buffer:
-        final_path = f"/mnt/b/armchair_tmp/transcript_{time.strftime('%Y%m%d_%H%M%S')}.txt"
-        with open(final_path, 'w') as f:
+        transcript_path = os.path.join(session_dir, "transcript.txt")
+        with open(transcript_path, 'w') as f:
             f.write('\n'.join(transcript_buffer))
-        log("ARMCHAIR", f"Final transcript saved: {final_path}")
+        log("SESSION", f"Transcript saved: {transcript_path}")
 
         names = get_speaker_names()
         if names:
-            names_path = f"/mnt/b/armchair_tmp/speakers_{time.strftime('%Y%m%d_%H%M%S')}.json"
-            save_json(names_path, names)
+            save_json(os.path.join(session_dir, "speaker_names.json"), names)
+            log("SESSION", "Speaker names saved")
 
+        try:
+            with open(DETECTED_SPEAKERS_FILE, 'r') as f:
+                detected = json.load(f)
+            save_json(os.path.join(session_dir, "detected_speakers.json"), detected)
+        except:
+            pass
+
+    # Copy audio file to session folder
+    if os.path.exists(AUDIO_FILE):
+        import shutil
+        audio_dest = os.path.join(session_dir, "audio.raw")
+        try:
+            shutil.copy2(AUDIO_FILE, audio_dest)
+            log("SESSION", f"Audio saved: {audio_dest}")
+        except:
+            pass
+
+    log("SESSION", f"Session ended: {session_dir}")
     log("ARMCHAIR", "Pipeline stopped.")
 
 
