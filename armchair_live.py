@@ -611,13 +611,21 @@ class Speaker:
 
             shutil.copy2(wav_path, win_path)
 
+            if not os.path.exists(win_path):
+                log("TTS", f"ERROR: WAV not copied to {win_path}")
+                return
+
             powershell = '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe'
             play_cmd = [
                 powershell, '-c',
                 f"(New-Object System.Media.SoundPlayer '{win_path}').PlaySync()"
             ]
             log("TTS", f"{agent_name}: {text[:80]}...")
-            subprocess.run(play_cmd, capture_output=True, text=True, timeout=30)
+            result = subprocess.run(play_cmd, capture_output=True, text=True, timeout=30)
+            if result.returncode != 0:
+                log("TTS", f"PlaySync error: {result.stderr[:200]}")
+            if result.stdout:
+                log("TTS", f"PlaySync output: {result.stdout[:200]}")
 
         except subprocess.TimeoutExpired:
             log("TTS", "Timeout")
