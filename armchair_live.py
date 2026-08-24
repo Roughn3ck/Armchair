@@ -267,14 +267,16 @@ class Transcriber:
 # SPEAKER DIARIZATION (pyannote-audio, CUDA)
 # ============================================================
 class Diarizer:
+    SIMILARITY_THRESHOLD = 0.75  # cosine similarity to match a known speaker
+
     def __init__(self, min_speakers=2, max_speakers=10):
         log("DIAR", "Loading pyannote-audio pipeline...")
         from pyannote.audio import Pipeline
         import torch
+        import numpy as np
 
         # Disable cuDNN to avoid version conflict between faster-whisper (cu12 cuDNN)
         # and PyTorch 2.13 (cu13 cuDNN). CUDA still works — just no cuDNN acceleration.
-        # Diarization runs in ~1.5s per 4s chunk without cuDNN.
         torch.backends.cudnn.enabled = False
         log("DIAR", "cuDNN disabled (avoids cu12/cu13 version conflict)")
 
@@ -301,14 +303,37 @@ class Diarizer:
         else:
             log("DIAR", "CUDA not available, running on CPU")
 
-        self.min_speakers = min_speakers
-        self.max_speakers = max_speakers
-        self.speaker_embeddings = {}
-        log("DIAR", "Ready")
+        # Speaker embedding database: {label: [embedding_array, ...]}
+        self.known_speakers = {}  # {"SPEAKER_00": np.array([...]), "SPEAKER_01": ...}
+        self.speaker_count = 0
+        self.np = np
+        log("DIAR", "Ready (embedding-based speaker tracking)")
+
+    def _cosine_similarity(self, a, b):
+        """Cosine similarity between two numpy arrays."""
+        return float(self.np.dot(a, b) / (self.np.linalg.norm(a) * self.np.linalg.norm(b) + 1e-8))
+
+    def _match_speaker(self, embedding):
+        """Match embedding to known speaker. Returns (label, similarity) or (None, 0)."""
+        best_match = None
+        best_sim = 0.0
+        for label, ref_embedding in self.known_speakers.items():
+            sim = self._cosine_similarity(embedding, ref_embedding)
+            if sim > best_sim:
+                best_sim = sim
+                best_match = label
+        return best_match, best_sim
+
+    def _register_speaker(self, embedding):
+        """Register a new speaker with the given embedding."""
+        label = f"SPEAKER_{self.speaker_count:02d}"
+        self.known_speakers[label] = embedding
+        self.speaker_count += 1
+        log("DIAR", f"New speaker registered: {label} (total: {self.speaker_count})")
+        return label
 
     def diarize_pcm(self, pcm_data, sample_rate=16000):
-        """Run diarization on a PCM chunk. Returns list of (speaker, start, end) tuples."""
-        import numpy as np
+        """Run diarization on a PCM chunk. Returns primary speaker label for the chunk."""
         import torch
         import soundfile as sf
         import tempfile
@@ -332,35 +357,40 @@ class Diarizer:
             result = self.pipeline(
                 {"waveform": waveform, "sample_rate": sample_rate}
             )
+
+            # Get speaker embedding from result
+            embeddings = result.speaker_embeddings
+            if embeddings is not None and len(embeddings) > 0:
+                # Use the first (and usually only) embedding
+                chunk_embedding = self.np.array(embeddings[0])
+
+                # Match against known speakers
+                match_label, sim = self._match_speaker(chunk_embedding)
+
+                if match_label and sim >= self.SIMILARITY_THRESHOLD:
+                    # Update the reference embedding (running average for stability)
+                    old = self.known_speakers[match_label]
+                    self.known_speakers[match_label] = 0.7 * old + 0.3 * chunk_embedding
+                    return match_label
+                else:
+                    # No match — register new speaker
+                    label = self._register_speaker(chunk_embedding)
+                    return label
+
+            # Fallback: use diarization labels directly
             diarization = result.speaker_diarization
+            labels = list(diarization.labels())
+            if labels:
+                return labels[0]
 
-            # Extract speaker segments
-            segments = []
-            for turn, _, speaker in diarization.itertracks(yield_label=True):
-                segments.append({
-                    'speaker': speaker,
-                    'start': turn.start,
-                    'end': turn.end
-                })
-
-            return segments
+            return "SPEAKER_UNKNOWN"
 
         except Exception as e:
             log("DIAR", f"Error: {e}")
-            return []
+            return "SPEAKER_UNKNOWN"
         finally:
             if os.path.exists(tmp_wav.name):
                 os.remove(tmp_wav.name)
-
-    def identify_primary_speaker(self, segments, chunk_duration):
-        """Return the speaker with the most speaking time in this chunk."""
-        if not segments:
-            return None
-        talk_time = {}
-        for seg in segments:
-            duration = seg['end'] - seg['start']
-            talk_time[seg['speaker']] = talk_time.get(seg['speaker'], 0) + duration
-        return max(talk_time, key=talk_time.get) if talk_time else None
 
 
 # ============================================================
@@ -613,15 +643,12 @@ def main():
         if text.lower().strip() in SKIP_PHRASES:
             continue
 
-        # DIARIZE — identify speaker
+        # DIARIZE — identify speaker using embedding similarity
         speaker_label = "SPEAKER_UNKNOWN"
         if diarizer:
             diarize_start = time.time()
-            segs = diarizer.diarize_pcm(chunk_data)
+            speaker_label = diarizer.diarize_pcm(chunk_data)
             diarize_elapsed = time.time() - diarize_start
-            primary = diarizer.identify_primary_speaker(segs, CHUNK_SECONDS)
-            if primary:
-                speaker_label = primary
             log("DIAR", f"({diarize_elapsed:.1f}s) {speaker_label}")
 
         # Load current speaker names (from dashboard)
