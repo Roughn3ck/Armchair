@@ -9,6 +9,7 @@ TRANSCRIPT = '/tmp/armchair/transcript.txt'
 LATENCY_FILE = '/tmp/armchair/latency.txt'
 MODE_FILE = '/tmp/armchair/mode.txt'
 SPEAKER_NAMES_FILE = '/tmp/armchair/speaker_names.json'
+DETECTED_SPEAKERS_FILE = '/tmp/armchair/detected_speakers.json'
 AGENT_CONFIG_FILE = '/tmp/armchair/agent_config.json'
 
 
@@ -51,6 +52,12 @@ class ArmchairHandler(http.server.SimpleHTTPRequestHandler):
                     speaker_names = json.load(f)
             except: pass
 
+            detected_speakers = []
+            try:
+                with open(DETECTED_SPEAKERS_FILE, 'r') as f:
+                    detected_speakers = json.load(f)
+            except: pass
+
             agent_config = {}
             try:
                 with open(AGENT_CONFIG_FILE, 'r') as f:
@@ -62,6 +69,7 @@ class ArmchairHandler(http.server.SimpleHTTPRequestHandler):
                 'latency': latency,
                 'mode': current_mode,
                 'speaker_names': speaker_names,
+                'detected_speakers': detected_speakers,
                 'agent_config': agent_config,
                 'time': time.strftime('%H:%M:%S')
             })

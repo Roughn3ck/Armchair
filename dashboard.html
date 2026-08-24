@@ -157,6 +157,9 @@ function saveSpeakerName(speakerId, name) {
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({names: knownSpeakers})
     }).catch(() => {});
+    // Force transcript refresh to apply name retroactively
+    lastTranscript = '';
+    update();
 }
 
 function updateSpeakerRows() {
@@ -205,14 +208,23 @@ async function update() {
             }
         }
 
-        // Speaker names
-        if (data.speaker_names) {
-            const oldKeys = Object.keys(knownSpeakers).sort().join(',');
-            const newKeys = Object.keys(data.speaker_names).sort().join(',');
-            knownSpeakers = {...knownSpeakers, ...data.speaker_names};
-            if (oldKeys !== newKeys) {
-                updateSpeakerRows();
+        // Speaker names — merge detected speakers with user-entered names
+        if (data.detected_speakers) {
+            // Initialize knownSpeakers for any newly detected speakers
+            for (const spk of data.detected_speakers) {
+                if (!(spk in knownSpeakers)) {
+                    knownSpeakers[spk] = '';
+                }
             }
+            // Remove speakers no longer detected (optional — keep for safety)
+            updateSpeakerRows();
+        }
+        if (data.speaker_names) {
+            // Merge user-entered names (from API) over our local state
+            for (const [k, v] of Object.entries(data.speaker_names)) {
+                knownSpeakers[k] = v;
+            }
+            updateSpeakerRows();
         }
 
         // Transcript

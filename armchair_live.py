@@ -97,6 +97,7 @@ TRANSCRIPT_FILE = "/tmp/armchair/transcript.txt"
 LATENCY_FILE = "/tmp/armchair/latency.txt"
 MODE_FILE = "/tmp/armchair/mode.txt"
 SPEAKER_NAMES_FILE = "/tmp/armchair/speaker_names.json"
+DETECTED_SPEAKERS_FILE = "/tmp/armchair/detected_speakers.json"
 AGENT_CONFIG_FILE = "/tmp/armchair/agent_config.json"
 TTS_PLAYBACK_DIR = "/mnt/b/armchair_tmp"
 
@@ -474,6 +475,10 @@ class Diarizer:
             self._cached_segments = segments
             self.current_speaker = segments[-1][2]
 
+            # Write detected speakers for dashboard
+            all_speakers = sorted(set(self.speaker_map.values()))
+            save_json(DETECTED_SPEAKERS_FILE, all_speakers)
+
             # Log if multiple speakers
             unique_speakers = set(s[2] for s in segments)
             if len(unique_speakers) > 1:
@@ -658,7 +663,7 @@ def main():
             f.write('listen')
 
     # Clear state
-    for f in [TRANSCRIPT_FILE, LATENCY_FILE]:
+    for f in [TRANSCRIPT_FILE, LATENCY_FILE, DETECTED_SPEAKERS_FILE]:
         if os.path.exists(f):
             os.remove(f)
 
