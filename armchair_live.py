@@ -643,6 +643,12 @@ def main():
     os.makedirs(TTS_OUTPUT_DIR, exist_ok=True)
     os.makedirs(TTS_PLAYBACK_DIR, exist_ok=True)
 
+    # Create session folder
+    session_start = time.strftime("%Y-%m-%d_%H%M%S")
+    session_dir = os.path.join(SESSION_LOG_DIR, session_start)
+    os.makedirs(session_dir, exist_ok=True)
+    log("SESSION", f"Session started: {session_dir}")
+
     # Load agent config
     agent_config = get_agent_config()
     if args.agent_name:
