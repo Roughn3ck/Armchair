@@ -607,6 +607,7 @@ class Speaker:
         try:
             result = subprocess.run(
                 [PIPER_BIN, "-m", self.voice_path, "-c", self.config_path,
+                 "--length-scale", "0.8",
                  "-f", wav_path],
                 input=text, capture_output=True, text=True, timeout=15
             )
