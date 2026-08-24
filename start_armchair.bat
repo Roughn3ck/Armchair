@@ -36,7 +36,7 @@ echo Pipeline running. Press Ctrl+C to stop and save session.
 echo ================================================
 echo.
 
-%WSL% -e bash -c "export $(grep HF_TOKEN /mnt/b/OpenClaw/.openclaw/.env) && /home/krisr/.local/share/whisper-venv/bin/python3 /mnt/b/Github/Armchair/armchair_live.py"
+%WSL% -e bash -c "export $(grep HF_TOKEN /mnt/b/OpenClaw/.openclaw/.env) && /home/krisr/.local/share/whisper-venv/bin/python3 /mnt/b/Github/Armchair/armchair_live.py 2>&1 | tee /mnt/b/armchair_tmp/pipeline.log"
 
 REM After pipeline stops, clean up
 echo.
