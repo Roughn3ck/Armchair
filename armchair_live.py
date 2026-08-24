@@ -76,7 +76,7 @@ LLM_TEMPERATURE = 0.7
 TTS_VOICE_DEFAULT = "en_GB-alan-medium"
 PIPER_BIN = "/home/krisr/.local/bin/piper"
 PIPER_MODELS_DIR = "/home/krisr/.local/share/piper"
-TTS_OUTPUT_DIR = "/tmp/armchair/tts"
+TTS_OUTPUT_DIR = "/mnt/b/armchair_tmp/tts"
 
 # Agent defaults
 AGENT_NAME_DEFAULT = "Agricola"
@@ -825,14 +825,14 @@ def main():
 
     # Save final transcript
     if transcript_buffer:
-        final_path = f"/tmp/armchair/transcript_{time.strftime('%Y%m%d_%H%M%S')}.txt"
+        final_path = f"/mnt/b/armchair_tmp/transcript_{time.strftime('%Y%m%d_%H%M%S')}.txt"
         with open(final_path, 'w') as f:
             f.write('\n'.join(transcript_buffer))
         log("ARMCHAIR", f"Final transcript saved: {final_path}")
 
         names = get_speaker_names()
         if names:
-            names_path = f"/tmp/armchair/speakers_{time.strftime('%Y%m%d_%H%M%S')}.json"
+            names_path = f"/mnt/b/armchair_tmp/speakers_{time.strftime('%Y%m%d_%H%M%S')}.json"
             save_json(names_path, names)
 
     log("ARMCHAIR", "Pipeline stopped.")
