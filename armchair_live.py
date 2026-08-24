@@ -1,17 +1,27 @@
 #!/usr/bin/env python3
 r"""
-Agent In The Armchair — Real-time VTT (Voice-to-Text) for MS Teams
+Agent In The Armchair — Real-time VTT + AI Agent for MS Teams
 
 Architecture:
   Windows ffmpeg -> B:\armchair_audio.raw (16kHz mono PCM)
-  WSL reads /mnt/b/armchair_audio.raw -> Whisper (faster-whisper, CUDA) -> transcript
-  -> Dashboard (live transcript view on http://localhost:8765)
+  WSL reads /mnt/b/armchair_audio.raw
+    -> Whisper (faster-whisper, CUDA) -> transcript
+    -> pyannote-audio (CUDA) -> speaker diarization
+    -> Dashboard (live transcript with speaker labels on http://localhost:8765)
 
-No TTS. No LLM. Pure listen + transcribe. Invisible to Teams.
+  Talk mode (when enabled):
+    -> LLM gate: "Is the agent being directly addressed?"
+    -> If yes: LLM generates response -> Piper TTS -> WAV -> PowerShell -> CABLE-A Input -> meeting
+    -> If no: [SILENCE] — agent stays quiet
+
+  Post-call:
+    -> Transcript saved with speaker labels
+    -> Agent's own responses logged
+    -> Speaker names assigned via dashboard
 
 Usage:
-  python3 armchair_live.py [--whisper-model MODEL]
-  python3 armchair_live.py --whisper-model large-v3-turbo
+  python3 armchair_live.py [--whisper-model MODEL] [--agent-name NAME] [--voice VOICE]
+  python3 armchair_live.py --agent-name Agricola --voice en_US-norman-medium
 """
 
 import subprocess
@@ -23,6 +33,10 @@ import time
 import json
 import signal
 import argparse
+import threading
+import urllib.request
+import shutil
+import re
 
 # ============================================================
 # CONFIG
@@ -31,9 +45,9 @@ AUDIO_FILE = "/mnt/b/armchair_audio.raw"
 SAMPLE_RATE = 16000
 CHANNELS = 1
 BYTES_PER_SAMPLE = 2
-CHUNK_SECONDS = 4          # 4s chunks = good balance of speed and accuracy
-CHUNK_BYTES = 128000       # 4s * 16kHz * 1ch * 2bytes
-SILENCE_THRESHOLD = 3     # 3% max amplitude = speech detection threshold
+CHUNK_SECONDS = 4
+CHUNK_BYTES = 128000
+SILENCE_THRESHOLD = 3
 OVERLAP_SECONDS = 1
 OVERLAP_BYTES = int(OVERLAP_SECONDS * SAMPLE_RATE * CHANNELS * BYTES_PER_SAMPLE)
 
@@ -42,14 +56,115 @@ WHISPER_MODEL_DEFAULT = "large-v3-turbo"
 WHISPER_DEVICE = "cuda"
 WHISPER_COMPUTE = "float16"
 
-# Pipeline state
+# Diarization config
+DIARIZATION_MIN_SPEAKERS = 2
+DIARIZATION_MAX_SPEAKERS = 10
+
+# LLM config (Ollama)
+LLM_MODEL_DEFAULT = "deepseek-v3.2:cloud"
+LLM_API_HOST = "localhost"
+LLM_API_PORT = 11434
+LLM_API_PATH = "/api/chat"
+LLM_MAX_TOKENS = 150
+LLM_TEMPERATURE = 0.7
+
+# TTS config (Piper)
+TTS_VOICE_DEFAULT = "en_US-norman-medium"
+PIPER_BIN = "/home/krisr/.local/bin/piper"
+PIPER_MODELS_DIR = "/home/krisr/.local/share/piper"
+TTS_OUTPUT_DIR = "/tmp/armchair/tts"
+
+# Agent defaults
+AGENT_NAME_DEFAULT = "Agricola"
+AGENT_PERSONA_DEFAULT = (
+    "You are {agent_name}, a strategic advisor participating in a Microsoft Teams meeting. "
+    "You are calm, measured, and speak only when directly addressed. "
+    "Your responses are concise and strategic. "
+    "Never use asterisks, markdown, bullet points, or special characters. Plain English only. "
+    "Say as much as the situation demands — no more, no less. "
+    "If you are NOT being directly addressed (someone is just mentioning your name in conversation), "
+    "respond with exactly: [SILENCE] "
+    "If you ARE being directly addressed, respond with your message. "
+    "Do not repeat yourself. Do not announce that you are staying silent."
+)
+
+# Pipeline state files
 TRANSCRIPT_FILE = "/tmp/armchair/transcript.txt"
 LATENCY_FILE = "/tmp/armchair/latency.txt"
+MODE_FILE = "/tmp/armchair/mode.txt"
+SPEAKER_NAMES_FILE = "/tmp/armchair/speaker_names.json"
+AGENT_CONFIG_FILE = "/tmp/armchair/agent_config.json"
+TTS_PLAYBACK_DIR = "/mnt/b/armchair_tmp"
+
+# Whisper hallucination filter
+SKIP_PHRASES = [
+    "thanks for watching", "subscribe", "the end", "thank you",
+    "thank you.", "you", "bye", "bye-bye", "bye bye", "goodbye",
+    "see you next time", "i'll see you next time",
+    "we'll see you next time", "we'll be right back"
+]
 
 
 def log(tag, msg):
     ts = time.strftime("%H:%M:%S")
     print(f"[{ts}] [{tag}] {msg}", flush=True)
+
+
+def clean_for_speech(text):
+    """Strip markdown and special characters for TTS."""
+    text = re.sub(r'\*{1,2}([^*]+)\*{1,2}', r'\1', text)
+    text = re.sub(r'^[-*] ', '', text, flags=re.MULTILINE)
+    text = text.replace('_', ' ')
+    text = text.replace('"', '')
+    text = re.sub(r'[\[\](){}]', '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
+# ============================================================
+# STATE MANAGEMENT
+# ============================================================
+def load_json(path, default):
+    try:
+        with open(path, 'r') as f:
+            return json.load(f)
+    except:
+        return default
+
+
+def save_json(path, data):
+    try:
+        with open(path, 'w') as f:
+            json.dump(data, f)
+    except Exception as e:
+        log("STATE", f"Failed to save {path}: {e}")
+
+
+def get_mode():
+    try:
+        with open(MODE_FILE, 'r') as f:
+            return f.read().strip()
+    except:
+        return 'listen'
+
+
+def get_speaker_names():
+    return load_json(SPEAKER_NAMES_FILE, {})
+
+
+def get_agent_config():
+    return load_json(AGENT_CONFIG_FILE, {
+        'name': AGENT_NAME_DEFAULT,
+        'voice': TTS_VOICE_DEFAULT,
+        'llm_model': LLM_MODEL_DEFAULT,
+        'persona': AGENT_PERSONA_DEFAULT,
+    })
+
+
+def format_speaker(speaker_id, names=None):
+    if names and speaker_id in names and names[speaker_id]:
+        return names[speaker_id]
+    return speaker_id
 
 
 # ============================================================
@@ -61,7 +176,7 @@ class AudioCapture:
         self.chunk_bytes = chunk_bytes
         self.overlap_bytes = overlap_bytes
         self.offset = 0
-        self._caught_up = False  # Skip old data on first read
+        self._caught_up = False
 
     def read_chunk(self):
         if not os.path.exists(self.audio_file):
@@ -71,14 +186,13 @@ class AudioCapture:
         except OSError:
             return None
 
-        # On first reads, skip to the end of existing data to avoid processing old audio
         if not self._caught_up:
             if current_size >= self.chunk_bytes:
                 self.offset = current_size - self.chunk_bytes
                 self._caught_up = True
                 log("CAPTURE", f"Skipping to end of existing data (offset={self.offset})")
             else:
-                return None  # File too small, wait for more data
+                return None
 
         if current_size < self.offset:
             self.offset = 0
@@ -107,10 +221,6 @@ class Transcriber:
         ld = os.environ.get('LD_LIBRARY_PATH', '')
         os.environ['LD_LIBRARY_PATH'] = f"{cuda}:{cudnn}:{nvrtc}:{ld}"
 
-        # Preload CUDA libraries before importing faster_whisper.
-        # Setting LD_LIBRARY_PATH after process start isn't enough — the
-        # dynamic linker caches its search path at startup. ctypes.WAIT
-        # forces the linker to pick up the new path.
         import ctypes
         for lib in ['libcublas.so.12', 'libcublasLt.so.12', 'libcudnn.so.8', 'libcudart.so.12']:
             for d in [cuda, cudnn, nvrtc]:
@@ -150,32 +260,298 @@ class Transcriber:
 
 
 # ============================================================
+# SPEAKER DIARIZATION (pyannote-audio, CUDA)
+# ============================================================
+class Diarizer:
+    def __init__(self, min_speakers=2, max_speakers=10):
+        log("DIAR", "Loading pyannote-audio pipeline...")
+        from pyannote.audio import Pipeline
+        import torch
+
+        # Use HuggingFace token from env or cache
+        token = os.environ.get('HF_TOKEN', '')
+
+        self.pipeline = Pipeline.from_pretrained(
+            "pyannote/speaker-diarization-3.1",
+            use_auth_token=token if token else None
+        )
+
+        if torch.cuda.is_available():
+            self.pipeline.to(torch.device("cuda"))
+            log("DIAR", f"Pipeline loaded on CUDA ({torch.cuda.get_device_name(0)})")
+        else:
+            log("DIAR", "WARNING: CUDA not available, running on CPU")
+
+        self.min_speakers = min_speakers
+        self.max_speakers = max_speakers
+        self.speaker_embeddings = {}
+        log("DIAR", "Ready")
+
+    def diarize_pcm(self, pcm_data, sample_rate=16000):
+        """Run diarization on a PCM chunk. Returns list of (speaker, start, end) tuples."""
+        import numpy as np
+        import torch
+        import tempfile
+
+        tmp_wav = tempfile.NamedTemporaryFile(suffix='.wav', dir='/tmp/armchair', delete=False)
+        tmp_wav.close()
+        try:
+            with wave.open(tmp_wav.name, 'wb') as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(sample_rate)
+                wf.writeframes(pcm_data)
+
+            # Load audio as tensor
+            import torchaudio
+            waveform, sr = torchaudio.load(tmp_wav.name)
+
+            if sr != sample_rate:
+                waveform = torchaudio.functional.resample(waveform, sr, sample_rate)
+
+            # Run diarization
+            diarization = self.pipeline(
+                {"waveform": waveform, "sample_rate": sample_rate},
+                min_speakers=self.min_speakers,
+                max_speakers=self.max_speakers
+            )
+
+            # Extract speaker segments
+            segments = []
+            for turn, _, speaker in diarization.itertracks(yield_label=True):
+                segments.append({
+                    'speaker': speaker,
+                    'start': turn.start,
+                    'end': turn.end
+                })
+
+            return segments
+
+        except Exception as e:
+            log("DIAR", f"Error: {e}")
+            return []
+        finally:
+            if os.path.exists(tmp_wav.name):
+                os.remove(tmp_wav.name)
+
+    def identify_primary_speaker(self, segments, chunk_duration):
+        """Return the speaker with the most speaking time in this chunk."""
+        if not segments:
+            return None
+        talk_time = {}
+        for seg in segments:
+            duration = seg['end'] - seg['start']
+            talk_time[seg['speaker']] = talk_time.get(seg['speaker'], 0) + duration
+        return max(talk_time, key=talk_time.get) if talk_time else None
+
+
+# ============================================================
+# LLM THINKER (Ollama API)
+# ============================================================
+class Thinker:
+    def __init__(self, model_id, agent_name, persona):
+        self.model_id = model_id
+        self.agent_name = agent_name
+        self.persona = persona.replace('{agent_name}', agent_name)
+        self.conversation = []
+
+    def think(self, transcript, agent_name_in_text):
+        """Send recent transcript to LLM. Returns response or None for [SILENCE]."""
+        if not transcript or len(transcript) < 5:
+            return None
+
+        self.conversation.append({
+            "role": "user",
+            "content": f"Recent transcript:\n{transcript}\n\nYour name is {self.agent_name}. Are you being directly addressed? If so, respond. If not, respond with [SILENCE]."
+        })
+
+        if len(self.conversation) > 20:
+            self.conversation = self.conversation[-20:]
+
+        payload = json.dumps({
+            "model": self.model_id,
+            "messages": [
+                {"role": "system", "content": self.persona},
+                *self.conversation
+            ],
+            "stream": False,
+            "think": False,
+            "options": {
+                "num_predict": LLM_MAX_TOKENS,
+                "temperature": LLM_TEMPERATURE
+            }
+        })
+
+        try:
+            req = urllib.request.Request(
+                f"http://{LLM_API_HOST}:{LLM_API_PORT}{LLM_API_PATH}",
+                data=payload.encode('utf-8'),
+                headers={"Content-Type": "application/json"}
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                result = json.loads(resp.read().decode('utf-8'))
+                response_text = result.get("message", {}).get("content", "").strip()
+
+                if response_text:
+                    # Check for silence signal
+                    if "[SILENCE]" in response_text.upper():
+                        self.conversation.append({"role": "assistant", "content": "[SILENCE]"})
+                        return None
+
+                    self.conversation.append({"role": "assistant", "content": response_text})
+                    return response_text
+                return None
+        except Exception as e:
+            log("LLM", f"Error: {e}")
+            return None
+
+
+# ============================================================
+# TTS SPEAKER (Piper)
+# ============================================================
+class Speaker:
+    def __init__(self, voice_model):
+        self.voice_model = voice_model
+        self.voice_path = os.path.join(PIPER_MODELS_DIR, f"{voice_model}.onnx")
+        self.config_path = os.path.join(PIPER_MODELS_DIR, f"{voice_model}.onnx.json")
+        self.speaking = False
+        os.makedirs(TTS_OUTPUT_DIR, exist_ok=True)
+        os.makedirs(TTS_PLAYBACK_DIR, exist_ok=True)
+
+        if not os.path.exists(self.voice_path):
+            log("TTS", f"WARNING: Voice model not found: {self.voice_path}")
+            log("TTS", "TTS will be disabled")
+            self.voice_path = None
+        else:
+            log("TTS", f"Voice: {voice_model} ({self.voice_path})")
+
+    def speak_and_release(self, text, agent_name):
+        """Generate TTS and play it. Blocks until audio finishes."""
+        try:
+            self.speak(text, agent_name)
+        finally:
+            self.speaking = False
+            log("TTS", "Speaking lock released")
+
+    def speak(self, text, agent_name):
+        if not text or len(text) < 3 or not self.voice_path:
+            return
+
+        timestamp = int(time.time() * 1000)
+        wav_path = f"{TTS_OUTPUT_DIR}/agent_{timestamp}.wav"
+        win_path = f"B:\\armchair_tmp\\agent_{timestamp}.wav"
+
+        try:
+            # Generate TTS with Piper (subprocess — fast, ~1s)
+            result = subprocess.run(
+                [PIPER_BIN, "-m", self.voice_path, "-c", self.config_path,
+                 "-f", wav_path, "--cuda"],
+                input=text, capture_output=True, text=True, timeout=15
+            )
+
+            if not os.path.exists(wav_path):
+                log("TTS", "Failed to generate audio")
+                return
+
+            # Copy to Windows-accessible path
+            shutil.copy2(wav_path, win_path)
+
+            # Play audio to Windows default device (CABLE-A Input)
+            powershell = '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe'
+            play_cmd = [
+                powershell, '-c',
+                f"(New-Object System.Media.SoundPlayer '{win_path}').PlaySync()"
+            ]
+            log("TTS", f"{agent_name}: {text[:80]}...")
+            subprocess.run(play_cmd, capture_output=True, text=True, timeout=30)
+
+        except subprocess.TimeoutExpired:
+            log("TTS", "Timeout generating/playing audio")
+        except Exception as e:
+            log("TTS", f"Error: {e}")
+        finally:
+            if os.path.exists(wav_path):
+                os.remove(wav_path)
+            if os.path.exists(win_path):
+                os.remove(win_path)
+
+
+# ============================================================
 # MAIN PIPELINE
 # ============================================================
 def main():
-    parser = argparse.ArgumentParser(description="Agent In The Armchair — VTT")
+    parser = argparse.ArgumentParser(description="Agent In The Armchair — VTT + AI Agent")
     parser.add_argument("--whisper-model", default=WHISPER_MODEL_DEFAULT)
     parser.add_argument("--whisper-device", default=WHISPER_DEVICE)
+    parser.add_argument("--agent-name", default=None, help="Agent name (default: from config or Agricola)")
+    parser.add_argument("--voice", default=None, help="Piper voice model (default: from config)")
+    parser.add_argument("--llm", default=None, help="Ollama LLM model (default: from config)")
+    parser.add_argument("--no-diarization", action="store_true", help="Disable speaker diarization")
+    parser.add_argument("--no-tts", action="store_true", help="Disable TTS (VTT only)")
     args = parser.parse_args()
 
     os.makedirs("/tmp/armchair", exist_ok=True)
+    os.makedirs(TTS_OUTPUT_DIR, exist_ok=True)
+    os.makedirs(TTS_PLAYBACK_DIR, exist_ok=True)
+
+    # Load or initialize agent config
+    agent_config = get_agent_config()
+    if args.agent_name:
+        agent_config['name'] = args.agent_name
+    if args.voice:
+        agent_config['voice'] = args.voice
+    if args.llm:
+        agent_config['llm_model'] = args.llm
+    save_json(AGENT_CONFIG_FILE, agent_config)
+
+    agent_name = agent_config['name']
+    voice_model = agent_config['voice']
+    llm_model = agent_config.get('llm_model', LLM_MODEL_DEFAULT)
+    persona = agent_config.get('persona', AGENT_PERSONA_DEFAULT)
+
+    # Write default mode
+    if not os.path.exists(MODE_FILE):
+        with open(MODE_FILE, 'w') as f:
+            f.write('listen')
 
     # Clear state files
     for f in [TRANSCRIPT_FILE, LATENCY_FILE]:
         if os.path.exists(f):
             os.remove(f)
 
+    # Initialize components
     capture = AudioCapture(AUDIO_FILE, CHUNK_BYTES, overlap_bytes=OVERLAP_BYTES)
     transcriber = Transcriber(args.whisper_model, args.whisper_device,
-                              "float16" if args.whisper_device == "cuda" else "int8")
+                             "float16" if args.whisper_device == "cuda" else "int8")
+
+    diarizer = None
+    if not args.no_diarization:
+        try:
+            diarizer = Diarizer(DIARIZATION_MIN_SPEAKERS, DIARIZATION_MAX_SPEAKERS)
+        except Exception as e:
+            log("DIAR", f"Failed to init diarization: {e}")
+            log("DIAR", "Continuing without speaker labels")
+
+    thinker = None
+    speaker = None
+    if not args.no_tts:
+        thinker = Thinker(llm_model, agent_name, persona)
+        speaker = Speaker(voice_model)
 
     transcript_buffer = []
     last_minute_stamp = None
+    last_think_time = 0
+    THINK_INTERVAL = 4  # seconds between LLM calls
+    SPEECH_DEBOUNCE = 3  # seconds of silence before thinking
 
     log("ARMCHAIR", "=" * 60)
-    log("ARMCHAIR", "AGENT IN THE ARMCHAIR — VTT")
+    log("ARMCHAIR", f"AGENT IN THE ARMCHAIR — {agent_name}")
     log("ARMCHAIR", "=" * 60)
     log("ARMCHAIR", f"Whisper: {args.whisper_model} ({args.whisper_device})")
+    log("ARMCHAIR", f"Diarization: {'enabled (pyannote-audio CUDA)' if diarizer else 'disabled'}")
+    log("ARMCHAIR", f"LLM: {llm_model if thinker else 'disabled'}")
+    log("ARMCHAIR", f"TTS: {voice_model if speaker else 'disabled'}")
+    log("ARMCHAIR", f"Agent: {agent_name}")
     log("ARMCHAIR", f"Audio: {AUDIO_FILE}")
     log("ARMCHAIR", f"Chunk: {CHUNK_SECONDS}s, Overlap: {OVERLAP_SECONDS}s")
     log("ARMCHAIR", f"Dashboard: http://localhost:8765")
@@ -208,7 +584,7 @@ def main():
             if vol_pct < SILENCE_THRESHOLD:
                 continue
 
-        # LISTEN
+        # LISTEN — transcribe
         transcribe_start = time.time()
         text = transcriber.transcribe_pcm(chunk_data)
         transcribe_elapsed = time.time() - transcribe_start
@@ -216,46 +592,105 @@ def main():
         if not text or len(text) < 3:
             continue
 
-        # Filter common Whisper hallucinations
-        skip_phrases = [
-            "thanks for watching", "subscribe", "the end", "thank you",
-            "thank you.", "you", "bye", "bye-bye", "bye bye", "goodbye",
-            "see you next time", "i'll see you next time",
-            "we'll see you next time", "we'll be right back"
-        ]
-        if text.lower().strip() in skip_phrases:
+        if text.lower().strip() in SKIP_PHRASES:
             continue
 
-        log("HEARD", f"({transcribe_elapsed:.1f}s) {text}")
+        # DIARIZE — identify speaker
+        speaker_label = "SPEAKER_UNKNOWN"
+        if diarizer:
+            diarize_start = time.time()
+            segs = diarizer.diarize_pcm(chunk_data)
+            diarize_elapsed = time.time() - diarize_start
+            primary = diarizer.identify_primary_speaker(segs, CHUNK_SECONDS)
+            if primary:
+                speaker_label = primary
+            log("DIAR", f"({diarize_elapsed:.1f}s) {speaker_label}")
+
+        # Load current speaker names (from dashboard)
+        speaker_names = get_speaker_names()
+        display_name = format_speaker(speaker_label, speaker_names)
+
+        total_elapsed = transcribe_elapsed + (diarize_elapsed if diarizer else 0)
+        log("HEARD", f"({total_elapsed:.1f}s) [{display_name}] {text}")
 
         # Write latency
         try:
             with open(LATENCY_FILE, 'w') as f:
-                f.write(f'{transcribe_elapsed:.1f}s')
+                f.write(f'{total_elapsed:.1f}s')
         except:
             pass
 
-        # Append to transcript buffer — timestamp once per minute
+        # Append to transcript buffer — minute separator + labeled line
         current_minute = time.strftime('%H:%M')
         if current_minute != last_minute_stamp:
             transcript_buffer.append(f"--- {current_minute} ---")
             last_minute_stamp = current_minute
-        transcript_buffer.append(text)
+        transcript_buffer.append(f"{display_name}: {text}")
 
-        # Keep last 500 lines in memory
-        if len(transcript_buffer) > 500:
-            transcript_buffer = transcript_buffer[-500:]
+        if len(transcript_buffer) > 1000:
+            transcript_buffer = transcript_buffer[-1000:]
 
-        # Write transcript file for dashboard
         with open(TRANSCRIPT_FILE, 'w') as f:
             f.write('\n'.join(transcript_buffer))
 
-    # Save final transcript
+        # THINK — only in talk mode and if agent name appears in transcript
+        current_mode = get_mode()
+        if current_mode != 'talk' or not thinker:
+            continue
+
+        # Check if agent name is mentioned in the text
+        agent_name_lower = agent_name.lower()
+        if agent_name_lower not in text.lower():
+            continue
+
+        # Rate limit
+        now = time.time()
+        if (now - last_think_time) < THINK_INTERVAL:
+            continue
+
+        # Build recent transcript context
+        recent_lines = transcript_buffer[-10:]
+        recent_context = '\n'.join(recent_lines)
+
+        log("LLM", f"Agent name detected — checking if directly addressed...")
+        think_start = time.time()
+        response = thinker.think(recent_context, agent_name)
+        think_elapsed = time.time() - think_start
+        last_think_time = time.time()
+
+        if response:
+            cleaned = clean_for_speech(response)
+            log("THINK", f"({think_elapsed:.1f}s) {cleaned}")
+
+            # Append agent response to transcript
+            transcript_buffer.append(f"{agent_name}: {cleaned}")
+            with open(TRANSCRIPT_FILE, 'w') as f:
+                f.write('\n'.join(transcript_buffer))
+
+            # SPEAK — Piper TTS to meeting
+            if speaker and not speaker.speaking:
+                speaker.speaking = True
+                threading.Thread(
+                    target=speaker.speak_and_release,
+                    args=(cleaned, agent_name),
+                    daemon=True
+                ).start()
+        else:
+            log("LLM", f"({think_elapsed:.1f}s) [SILENCE] — not directly addressed")
+
+    # Save final transcript with speaker labels
     if transcript_buffer:
         final_path = f"/tmp/armchair/transcript_{time.strftime('%Y%m%d_%H%M%S')}.txt"
         with open(final_path, 'w') as f:
             f.write('\n'.join(transcript_buffer))
         log("ARMCHAIR", f"Final transcript saved: {final_path}")
+
+        # Also save speaker names mapping
+        names = get_speaker_names()
+        if names:
+            names_path = f"/tmp/armchair/speakers_{time.strftime('%Y%m%d_%H%M%S')}.json"
+            save_json(names_path, names)
+            log("ARMCHAIR", f"Speaker names saved: {names_path}")
 
     log("ARMCHAIR", "Pipeline stopped.")
 

@@ -6,16 +6,42 @@
 <title>Agent In The Armchair</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { background: #0a0a0a; color: #e0e0e0; font-family: 'Segoe UI', 'Helvetica Neue', sans-serif; padding: 20px; max-width: 900px; margin: 0 auto; }
+body { background: #0a0a0a; color: #e0e0e0; font-family: 'Segoe UI', 'Helvetica Neue', sans-serif; padding: 20px; max-width: 1000px; margin: 0 auto; }
 .header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
 .header h1 { font-size: 22px; font-weight: 600; color: #fff; }
 .header .emoji { font-size: 28px; }
-.status-bar { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; padding: 10px 16px; background: #111; border: 1px solid #222; border-radius: 6px; }
+
+.top-bar { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+
+.mode-toggle { display: flex; gap: 0; border-radius: 6px; overflow: hidden; border: 1px solid #333; }
+.mode-btn { padding: 10px 20px; background: #111; color: #888; font-size: 14px; font-weight: 600; cursor: pointer; border: none; transition: all 0.2s; }
+.mode-btn:hover { background: #1a1a1a; }
+.mode-btn.active-listen { background: #0a3d0a; color: #00cc44; }
+.mode-btn.active-talk { background: #3d0a0a; color: #ff4444; }
+
+.status-bar { display: flex; align-items: center; gap: 16px; padding: 8px 16px; background: #111; border: 1px solid #222; border-radius: 6px; flex: 1; min-width: 200px; }
 .status-dot { width: 10px; height: 10px; border-radius: 50%; background: #333; transition: all 0.3s; }
 .status-dot.live { background: #00cc44; box-shadow: 0 0 8px rgba(0,204,68,0.6); }
 .status-text { font-size: 13px; color: #888; }
 .latency { font-size: 12px; color: #666; margin-left: auto; }
 .latency span { color: #00cc44; font-weight: 600; }
+
+.config-panel { background: #111; border: 1px solid #222; border-radius: 6px; padding: 16px; margin-bottom: 16px; }
+.config-panel h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 2px; color: #555; margin-bottom: 12px; }
+.config-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+.config-row label { font-size: 13px; color: #888; min-width: 100px; }
+.config-row input, .config-row select { background: #0a0a0a; border: 1px solid #333; color: #e0e0e0; padding: 6px 10px; border-radius: 4px; font-size: 13px; flex: 1; }
+.config-row input:focus, .config-row select:focus { border-color: #00cc44; outline: none; }
+.save-btn { padding: 6px 14px; background: #0a3d0a; color: #00cc44; border: 1px solid #00cc44; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; }
+.save-btn:hover { background: #0a4d0a; }
+
+.speaker-panel { background: #111; border: 1px solid #222; border-radius: 6px; padding: 16px; margin-bottom: 16px; }
+.speaker-panel h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 2px; color: #555; margin-bottom: 12px; }
+.speaker-row { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.speaker-row label { font-size: 13px; color: #888; min-width: 100px; }
+.speaker-row input { background: #0a0a0a; border: 1px solid #333; color: #e0e0e0; padding: 6px 10px; border-radius: 4px; font-size: 13px; flex: 1; }
+.speaker-row input:focus { border-color: #00cc44; outline: none; }
+
 .section { margin-top: 12px; border: 1px solid #1a2a1a; border-radius: 6px; background: #0d140d; overflow: hidden; }
 .section-header { padding: 10px 16px; background: #111811; border-bottom: 1px solid #1a2a1a; display: flex; align-items: center; justify-content: space-between; }
 .section-header h2 { color: #00cc44; font-size: 12px; text-transform: uppercase; letter-spacing: 2px; font-weight: 600; }
@@ -23,6 +49,8 @@ body { background: #0a0a0a; color: #e0e0e0; font-family: 'Segoe UI', 'Helvetica 
 .copy-btn:hover { border-color: #00cc44; color: #00cc44; }
 #transcript { color: #c0d0c0; font-size: 14px; white-space: pre-wrap; max-height: 500px; overflow-y: auto; padding: 16px; line-height: 1.6; font-family: 'SF Mono', 'Consolas', monospace; }
 #transcript .timestamp { color: #00cc44; font-size: 12px; font-weight: 600; display: block; margin-top: 12px; margin-bottom: 4px; padding-bottom: 2px; border-bottom: 1px solid #1a2a1a; }
+#transcript .speaker { color: #6ab0ff; font-weight: 600; }
+#transcript .agent { color: #ffaa44; font-weight: 600; }
 .new-line { animation: highlight 1s ease-out; }
 @keyframes highlight { 0% { background-color: rgba(0,204,68,0.15); } 100% { background-color: transparent; } }
 .footer { margin-top: 16px; font-size: 11px; color: #444; text-align: center; }
@@ -35,10 +63,43 @@ body { background: #0a0a0a; color: #e0e0e0; font-family: 'Segoe UI', 'Helvetica 
 <h1>Agent In The Armchair</h1>
 </div>
 
+<div class="top-bar">
+<div class="mode-toggle">
+<button class="mode-btn active-listen" id="btnListen" onclick="setMode('listen')">🔇 Listen</button>
+<button class="mode-btn" id="btnTalk" onclick="setMode('talk')">🎤 Talk</button>
+</div>
 <div class="status-bar">
 <div class="status-dot" id="statusDot"></div>
 <div class="status-text" id="statusText">Waiting for audio...</div>
 <div class="latency" id="latency"></div>
+</div>
+</div>
+
+<div class="config-panel">
+<h3>⚙️ Agent Configuration</h3>
+<div class="config-row">
+<label>Agent Name:</label>
+<input type="text" id="cfgAgentName" value="Agricola" onchange="saveAgentConfig()">
+</div>
+<div class="config-row">
+<label>Voice:</label>
+<select id="cfgVoice" onchange="saveAgentConfig()">
+<option value="en_US-norman-medium">Norman (deep, commanding)</option>
+<option value="en_US-joe-medium">Joe (mature, measured)</option>
+<option value="en_US-ryan-high">Ryan (clear, confident)</option>
+<option value="en_US-kusal-medium">Kusal (warm, articulate)</option>
+<option value="en_US-lessac-high">Lessac (neutral, polished)</option>
+<option value="en_US-lessac-medium">Lessac Medium</option>
+<option value="en_US-amy-low">Amy (female, soft)</option>
+</select>
+</div>
+</div>
+
+<div class="speaker-panel" id="speakerPanel">
+<h3>👥 Speaker Names</h3>
+<div id="speakerRows">
+<div style="color: #555; font-size: 13px;">Speakers will appear here once detected...</div>
+</div>
 </div>
 
 <div class="section">
@@ -50,11 +111,70 @@ body { background: #0a0a0a; color: #e0e0e0; font-family: 'Segoe UI', 'Helvetica 
 </div>
 
 <div class="footer">
-Agent In The Armchair — VTT pipeline • Whisper (CUDA) • Invisible to Teams
+Agent In The Armchair — VTT + AI Agent • Whisper (CUDA) • pyannote-audio • Piper TTS • Invisible to Teams
 </div>
 
 <script>
 let lastTranscript = '';
+let knownSpeakers = {};
+let agentConfig = {};
+let currentMode = 'listen';
+
+function setMode(mode) {
+    currentMode = mode;
+    document.querySelectorAll('.mode-btn').forEach(b => {
+        b.className = 'mode-btn';
+    });
+    if (mode === 'listen') document.getElementById('btnListen').className = 'mode-btn active-listen';
+    else document.getElementById('btnTalk').className = 'mode-btn active-talk';
+
+    fetch('/api/mode', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({mode: mode})
+    }).catch(() => {});
+}
+
+function saveAgentConfig() {
+    const config = {
+        name: document.getElementById('cfgAgentName').value,
+        voice: document.getElementById('cfgVoice').value
+    };
+    fetch('/api/agent-config', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(config)
+    }).catch(() => {});
+}
+
+function saveSpeakerName(speakerId, name) {
+    knownSpeakers[speakerId] = name;
+    fetch('/api/speaker-names', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({names: knownSpeakers})
+    }).catch(() => {});
+}
+
+function updateSpeakerRows() {
+    const container = document.getElementById('speakerRows');
+    const speakerIds = Object.keys(knownSpeakers).sort();
+
+    if (speakerIds.length === 0) {
+        container.innerHTML = '<div style="color: #555; font-size: 13px;">Speakers will appear here once detected...</div>';
+        return;
+    }
+
+    let html = '';
+    for (const id of speakerIds) {
+        const name = knownSpeakers[id] || '';
+        html += `<div class="speaker-row">
+            <label>${id}:</label>
+            <input type="text" value="${name}" placeholder="Enter name..." onchange="saveSpeakerName('${id}', this.value)">
+        </div>`;
+    }
+    container.innerHTML = html;
+}
 
 async function update() {
     try {
@@ -63,7 +183,33 @@ async function update() {
 
         // Latency
         if (data.latency) {
-            document.getElementById('latency').innerHTML = `Transcribe: <span>${data.latency}</span>`;
+            document.getElementById('latency').innerHTML = `Process: <span>${data.latency}</span>`;
+        }
+
+        // Mode sync
+        if (data.mode && data.mode !== currentMode) {
+            setMode(data.mode);
+        }
+
+        // Agent config sync
+        if (data.agent_config) {
+            agentConfig = data.agent_config;
+            if (agentConfig.name && document.getElementById('cfgAgentName').value !== agentConfig.name) {
+                document.getElementById('cfgAgentName').value = agentConfig.name;
+            }
+            if (agentConfig.voice && document.getElementById('cfgVoice').value !== agentConfig.voice) {
+                document.getElementById('cfgVoice').value = agentConfig.voice;
+            }
+        }
+
+        // Speaker names
+        if (data.speaker_names) {
+            const oldKeys = Object.keys(knownSpeakers).sort().join(',');
+            const newKeys = Object.keys(data.speaker_names).sort().join(',');
+            knownSpeakers = {...knownSpeakers, ...data.speaker_names};
+            if (oldKeys !== newKeys) {
+                updateSpeakerRows();
+            }
         }
 
         // Transcript
@@ -71,34 +217,41 @@ async function update() {
             const isNew = lastTranscript !== '';
             lastTranscript = data.transcript;
 
-            // Format with timestamp highlighting
+            // Parse and format
             const lines = data.transcript.split('\n');
+            const agentName = agentConfig.name || 'Agricola';
             const formatted = lines.map(line => {
-                const match = line.match(/^--- (\d{2}:\d{2}) ---$/);
+                // Minute separator
+                let match = line.match(/^--- (\d{2}:\d{2}) ---$/);
                 if (match) {
                     return `<span class="timestamp">${match[1]}</span>`;
+                }
+                // Speaker line: "SPEAKER_00: text" or "Agricola: text"
+                match = line.match(/^(\S+?): (.*)$/);
+                if (match) {
+                    const speaker = match[1];
+                    const text = match[2];
+                    const isAgent = speaker === agentName;
+                    const speakerClass = isAgent ? 'agent' : 'speaker';
+                    const displayName = knownSpeakers[speaker] || speaker;
+                    return `<span class="${speakerClass}">${displayName}:</span> ${text}`;
                 }
                 return line;
             }).join('\n');
 
             document.getElementById('transcript').innerHTML = formatted;
 
-            // Highlight new lines
             if (isNew) {
                 const div = document.getElementById('transcript');
                 const lastChild = div.lastElementChild;
-                if (lastChild) {
-                    lastChild.classList.add('new-line');
-                }
+                if (lastChild) lastChild.classList.add('new-line');
             }
 
-            // Auto-scroll to bottom
             const t = document.getElementById('transcript');
             t.scrollTop = t.scrollHeight;
 
-            // Update status
             document.getElementById('statusDot').className = 'status-dot live';
-            document.getElementById('statusText').textContent = 'Listening — transcribing';
+            document.getElementById('statusText').textContent = currentMode === 'talk' ? 'Listening — agent active' : 'Listening';
         } else if (!data.transcript) {
             document.getElementById('statusDot').className = 'status-dot';
             document.getElementById('statusText').textContent = 'Waiting for audio...';
@@ -113,13 +266,11 @@ function copyTranscript() {
         const original = btn.textContent;
         btn.textContent = 'Copied!';
         btn.style.color = '#00cc44';
-        setTimeout(() => {
-            btn.textContent = original;
-            btn.style.color = '';
-        }, 1500);
+        setTimeout(() => { btn.textContent = original; btn.style.color = ''; }, 1500);
     });
 }
 
+setMode('listen');
 setInterval(update, 1000);
 update();
 </script>
