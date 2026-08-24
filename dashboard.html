@@ -157,9 +157,28 @@ function saveSpeakerName(speakerId, name) {
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({names: knownSpeakers})
     }).catch(() => {});
-    // Force transcript refresh to apply name retroactively
-    lastTranscript = '';
-    update();
+    // Update transcript display to show names retroactively
+    // (without rebuilding speaker rows)
+    const transcriptEl = document.getElementById('transcript');
+    if (lastTranscript) {
+        const agentName = agentConfig.name || 'Agricola';
+        const lines = lastTranscript.split('\n');
+        const formatted = lines.map(line => {
+            let match = line.match(/^--- (\d{2}:\d{2}) ---$/);
+            if (match) return `<span class="timestamp">${match[1]}</span>`;
+            match = line.match(/^(\S+?): (.*)$/);
+            if (match) {
+                const speaker = match[1];
+                const text = match[2];
+                const isAgent = speaker === agentName;
+                const speakerClass = isAgent ? 'agent' : 'speaker';
+                const displayName = knownSpeakers[speaker] || speaker;
+                return `<span class="${speakerClass}">${displayName}:</span> ${text}`;
+            }
+            return line;
+        }).join('\n');
+        transcriptEl.innerHTML = formatted;
+    }
 }
 
 function updateSpeakerRows() {
@@ -167,19 +186,34 @@ function updateSpeakerRows() {
     const speakerIds = Object.keys(knownSpeakers).sort();
 
     if (speakerIds.length === 0) {
-        container.innerHTML = '<div style="color: #555; font-size: 13px;">Speakers will appear here once detected...</div>';
+        // Only show placeholder if there are truly no speakers
+        if (!container.dataset.placeholder) {
+            container.innerHTML = '<div style="color: #555; font-size: 13px;">Speakers will appear here once detected...</div>';
+            container.dataset.placeholder = 'true';
+        }
         return;
     }
 
-    let html = '';
-    for (const id of speakerIds) {
-        const name = knownSpeakers[id] || '';
-        html += `<div class="speaker-row">
-            <label>${id}:</label>
-            <input type="text" value="${name}" placeholder="Enter name..." onchange="saveSpeakerName('${id}', this.value)">
-        </div>`;
+    // Remove placeholder if it exists
+    if (container.dataset.placeholder) {
+        container.innerHTML = '';
+        delete container.dataset.placeholder;
     }
-    container.innerHTML = html;
+
+    // Only ADD rows for new speakers — don't rebuild existing ones
+    // This prevents input fields from losing focus during refresh
+    for (const id of speakerIds) {
+        if (!document.getElementById('speaker-row-' + id)) {
+            const name = knownSpeakers[id] || '';
+            const div = document.createElement('div');
+            div.className = 'speaker-row';
+            div.id = 'speaker-row-' + id;
+            div.innerHTML = `<label>${id}:</label><input type="text" id="speaker-input-${id}" value="${name}" placeholder="Enter name..." onchange="saveSpeakerName('${id}', this.value)">`;
+            container.appendChild(div);
+        }
+    }
+
+    // Remove rows for speakers no longer detected (optional, can skip)
 }
 
 async function update() {
@@ -286,7 +320,7 @@ function copyTranscript() {
 }
 
 setMode('listen');
-setInterval(update, 1000);
+setInterval(update, 2000);
 update();
 </script>
 </body>
