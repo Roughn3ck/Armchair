@@ -106,6 +106,9 @@ TTS_OUTPUT_DIR = "/mnt/b/armchair_tmp/tts"
 # Session logs — archived to Windows side
 SESSION_LOG_DIR = "/mnt/b/armchair_tmp/session_logs"
 
+# Identity folder — agent context files loaded on startup
+IDENTITY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Identity")
+
 # Whisper hallucination filter
 SKIP_PHRASES = {
     "thanks for watching", "subscribe", "the end", "thank you",
@@ -175,6 +178,52 @@ def format_speaker(speaker_id, names=None):
     if names and speaker_id in names and names[speaker_id]:
         return names[speaker_id]
     return speaker_id
+
+
+def load_identity(identity_dir):
+    """Load all .md and .txt files from the Identity folder (including memory/ subfolder).
+    Returns concatenated text for the LLM system prompt.
+    """
+    if not os.path.isdir(identity_dir):
+        log("IDENTITY", f"Folder not found: {identity_dir}")
+        return ""
+
+    context_parts = []
+
+    # Load files from the Identity folder
+    for fname in sorted(os.listdir(identity_dir)):
+        fpath = os.path.join(identity_dir, fname)
+        if os.path.isfile(fpath) and fname.lower().endswith(('.md', '.txt')):
+            try:
+                with open(fpath, 'r', encoding='utf-8') as f:
+                    content = f.read().strip()
+                if content:
+                    context_parts.append(f"--- {fname} ---\n{content}")
+                    log("IDENTITY", f"Loaded: {fname} ({len(content)} chars)")
+            except Exception as e:
+                log("IDENTITY", f"Error reading {fname}: {e}")
+
+    # Load files from memory/ subfolder
+    memory_dir = os.path.join(identity_dir, "memory")
+    if os.path.isdir(memory_dir):
+        for fname in sorted(os.listdir(memory_dir)):
+            fpath = os.path.join(memory_dir, fname)
+            if os.path.isfile(fpath) and fname.lower().endswith(('.md', '.txt')):
+                try:
+                    with open(fpath, 'r', encoding='utf-8') as f:
+                        content = f.read().strip()
+                    if content:
+                        context_parts.append(f"--- memory/{fname} ---\n{content}")
+                        log("IDENTITY", f"Loaded: memory/{fname} ({len(content)} chars)")
+                except Exception as e:
+                    log("IDENTITY", f"Error reading memory/{fname}: {e}")
+
+    if context_parts:
+        log("IDENTITY", f"Loaded {len(context_parts)} files, {sum(len(p) for p in context_parts)} chars total")
+    else:
+        log("IDENTITY", "No identity files found — using default persona only")
+
+    return "\n\n".join(context_parts)
 
 
 # ============================================================
@@ -512,10 +561,14 @@ class Diarizer:
 # LLM THINKER (Ollama API)
 # ============================================================
 class Thinker:
-    def __init__(self, model_id, agent_name, persona):
+    def __init__(self, model_id, agent_name, persona, identity_context=""):
         self.model_id = model_id
         self.agent_name = agent_name
         self.persona = persona.replace('{agent_name}', agent_name)
+        # Prepend identity context to the system prompt
+        if identity_context:
+            self.persona = f"{identity_context}\n\n--- PERSONA ---\n{self.persona}"
+            log("LLM", f"System prompt: {len(self.persona)} chars (identity + persona)")
         self.conversation = []
 
     def think(self, transcript):
@@ -691,6 +744,9 @@ def main():
     llm_model = agent_config.get('llm_model', LLM_MODEL_DEFAULT)
     persona = agent_config.get('persona', AGENT_PERSONA_DEFAULT)
 
+    # Load identity files from Identity/ folder
+    identity_context = load_identity(IDENTITY_DIR)
+
     if not os.path.exists(MODE_FILE):
         with open(MODE_FILE, 'w') as f:
             f.write('listen')
@@ -716,7 +772,7 @@ def main():
     thinker = None
     speaker = None
     if not args.no_tts:
-        thinker = Thinker(llm_model, agent_name, persona)
+        thinker = Thinker(llm_model, agent_name, persona, identity_context)
         speaker = Speaker(voice_model)
 
     transcript_buffer = []
