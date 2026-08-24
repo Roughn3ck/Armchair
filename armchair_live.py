@@ -222,7 +222,11 @@ class Transcriber:
         os.environ['LD_LIBRARY_PATH'] = f"{cuda}:{cudnn}:{nvrtc}:{ld}"
 
         import ctypes
-        for lib in ['libcublas.so.12', 'libcublasLt.so.12', 'libcudnn.so.8', 'libcudart.so.12']:
+        # Only preload cuBLAS (needed by faster-whisper/ctranslate2).
+        # Do NOT preload cuDNN — PyTorch 2.13 bundles its own cuDNN (cu13)
+        # and preloading the cu12 version causes CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH
+        # when pyannote-audio runs on CUDA.
+        for lib in ['libcublas.so.12', 'libcublasLt.so.12', 'libcudart.so.12']:
             for d in [cuda, cudnn, nvrtc]:
                 path = os.path.join(d, lib)
                 if os.path.exists(path):
@@ -268,19 +272,34 @@ class Diarizer:
         from pyannote.audio import Pipeline
         import torch
 
-        # Use HuggingFace token from env or cache
+        # Disable cuDNN to avoid version conflict between faster-whisper (cu12 cuDNN)
+        # and PyTorch 2.13 (cu13 cuDNN). CUDA still works — just no cuDNN acceleration.
+        # Diarization runs in ~1.5s per 4s chunk without cuDNN.
+        torch.backends.cudnn.enabled = False
+        log("DIAR", "cuDNN disabled (avoids cu12/cu13 version conflict)")
+
+        # Read HF token from .env file if not in environment
         token = os.environ.get('HF_TOKEN', '')
+        if not token:
+            try:
+                with open('/mnt/b/OpenClaw/.openclaw/.env', 'r') as f:
+                    for line in f:
+                        if line.startswith('HF_TOKEN='):
+                            token = line.strip().split('=', 1)[1]
+                            break
+            except:
+                pass
 
         self.pipeline = Pipeline.from_pretrained(
             "pyannote/speaker-diarization-3.1",
-            use_auth_token=token if token else None
+            token=token if token else None
         )
 
         if torch.cuda.is_available():
             self.pipeline.to(torch.device("cuda"))
             log("DIAR", f"Pipeline loaded on CUDA ({torch.cuda.get_device_name(0)})")
         else:
-            log("DIAR", "WARNING: CUDA not available, running on CPU")
+            log("DIAR", "CUDA not available, running on CPU")
 
         self.min_speakers = min_speakers
         self.max_speakers = max_speakers
@@ -291,6 +310,7 @@ class Diarizer:
         """Run diarization on a PCM chunk. Returns list of (speaker, start, end) tuples."""
         import numpy as np
         import torch
+        import soundfile as sf
         import tempfile
 
         tmp_wav = tempfile.NamedTemporaryFile(suffix='.wav', dir='/tmp/armchair', delete=False)
@@ -302,19 +322,17 @@ class Diarizer:
                 wf.setframerate(sample_rate)
                 wf.writeframes(pcm_data)
 
-            # Load audio as tensor
-            import torchaudio
-            waveform, sr = torchaudio.load(tmp_wav.name)
+            # Load audio with soundfile (avoids torchaudio/torchcodec dependency)
+            audio_data, sr = sf.read(tmp_wav.name, dtype='float32')
 
-            if sr != sample_rate:
-                waveform = torchaudio.functional.resample(waveform, sr, sample_rate)
+            # Convert to torch tensor: shape (channel, time) = (1, samples)
+            waveform = torch.from_numpy(audio_data).unsqueeze(0)
 
             # Run diarization
-            diarization = self.pipeline(
-                {"waveform": waveform, "sample_rate": sample_rate},
-                min_speakers=self.min_speakers,
-                max_speakers=self.max_speakers
+            result = self.pipeline(
+                {"waveform": waveform, "sample_rate": sample_rate}
             )
+            diarization = result.speaker_diarization
 
             # Extract speaker segments
             segments = []
