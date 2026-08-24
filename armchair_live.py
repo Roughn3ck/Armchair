@@ -284,10 +284,9 @@ class VAD:
 # STREAMING TRANSCRIBER (faster-whisper with local agreement)
 # ============================================================
 class StreamingTranscriber:
-    """Streaming transcription using faster-whisper.
+    """Streaming transcription using faster-whisper with word timestamps.
 
-    Accumulates VAD-detected speech and transcribes incrementally.
-    Uses local agreement: only commits text that appears in consecutive transcriptions.
+    Returns word-level segments that can be matched to pyannote speaker labels.
     """
 
     def __init__(self, model_name, device="cuda", compute_type="float16"):
@@ -315,74 +314,61 @@ class StreamingTranscriber:
         log("STT", "Model loaded")
 
         self.audio_buffer = np.array([], dtype=np.float32)
-        self.committed_text = ""
-        self.last_committed = ""
-        self.max_buffer = VAD_MAX_BUFFER * 16000  # Max samples in buffer
+        self.last_output_end = 0.0  # Timestamp of last output word
+        self.max_buffer = VAD_MAX_BUFFER * 16000
+        self._buffer_start_time = 0.0  # Time offset of buffer start
 
     def add_speech(self, audio):
         """Add VAD-detected speech to the buffer."""
         self.audio_buffer = np.append(self.audio_buffer, audio)
-        # Trim buffer if too long (keep latest)
         if len(self.audio_buffer) > self.max_buffer:
             excess = len(self.audio_buffer) - self.max_buffer
             self.audio_buffer = self.audio_buffer[excess:]
+            self._buffer_start_time += excess / 16000.0
+            self.last_output_end -= excess / 16000.0
+            if self.last_output_end < 0:
+                self.last_output_end = 0.0
 
-    def transcribe_incremental(self):
-        """Transcribe current buffer. Returns (new_text, full_text).
-
-        Simple diff approach: transcribe the buffer, compare to last output,
-        return whatever is new. No local agreement needed — the buffer slides
-        so we just track the last full transcription and diff against it.
-        """
-        if len(self.audio_buffer) < 1600:  # Need at least 0.1s
-            return "", self.committed_text
+    def transcribe_with_timestamps(self):
+        """Transcribe buffer. Returns list of (start_time, end_time, text) segments."""
+        if len(self.audio_buffer) < 1600:
+            return []
 
         try:
             segments, _ = self.model.transcribe(
                 self.audio_buffer, beam_size=5, language='en',
                 vad_filter=False,
-                condition_on_previous_text=False
+                condition_on_previous_text=False,
+                word_timestamps=True
             )
-            current_text = ' '.join(seg.text.strip() for seg in segments).strip()
 
-            if not current_text:
-                return "", self.committed_text
+            result = []
+            for seg in segments:
+                result.append({
+                    'start': seg.start,
+                    'end': seg.end,
+                    'text': seg.text.strip()
+                })
 
-            # Find the new text: whatever is in current_text that wasn't in last_text
-            new_text = ""
-            if not self.last_committed:
-                new_text = current_text
-            elif current_text.startswith(self.last_committed):
-                # Buffer grew — new text is the tail
-                new_text = current_text[len(self.last_committed):].strip()
-            elif self.last_committed in current_text:
-                # Last text is a substring of current — find what comes after
-                idx = current_text.find(self.last_committed)
-                new_text = current_text[idx + len(self.last_committed):].strip()
-            else:
-                # Text shifted completely — the buffer slid past old audio
-                # Output the whole new text as a new utterance
-                new_text = current_text
-                # Reset to avoid repeated output
-                self.last_committed = current_text
-                self.committed_text = current_text
-                return new_text, current_text
-
-            self.committed_text = current_text
-            self.last_committed = current_text
-            return new_text, self.committed_text
+            return result
 
         except Exception as e:
             log("STT", f"Error: {e}")
-            return "", self.committed_text
+            return []
 
-    def commit_and_clear(self):
-        """Commit current text and clear buffer for next utterance."""
+    def get_new_segments(self):
+        """Transcribe and return only segments after last_output_end."""
+        all_segs = self.transcribe_with_timestamps()
+        new_segs = [s for s in all_segs if s['end'] > self.last_output_end + 0.1]
+        if all_segs:
+            self.last_output_end = all_segs[-1]['end']
+        return new_segs
+
+    def clear(self):
+        """Clear buffer."""
         self.audio_buffer = np.array([], dtype=np.float32)
-        text = self.committed_text
-        self.committed_text = ""
-        self.last_committed = ""
-        return text
+        self.last_output_end = 0.0
+        self._buffer_start_time = 0.0
 
 
 # ============================================================
@@ -405,7 +391,7 @@ class Diarizer:
                         if line.startswith('HF_TOKEN='):
                             token = line.strip().split('=', 1)[1]
                             break
-            except:
+            except Exception:
                 pass
 
         from pyannote.audio import Pipeline
@@ -427,6 +413,7 @@ class Diarizer:
         self.speaker_count = 0
         self.current_speaker = "SPEAKER_00"
         self._has_result = False
+        self._cached_segments = [(0, 999, "SPEAKER_00")]
         log("DIAR", f"Ready (16s rolling buffer, diarize every {DIARIZE_INTERVAL}s)")
 
     def add_audio(self, pcm_bytes):
@@ -436,14 +423,16 @@ class Diarizer:
             excess = len(self.buffer) - self.buffer_max
             del self.buffer[:excess]
 
-    def get_speaker(self):
-        """Get current speaker label. Re-runs diarization every DIARIZE_INTERVAL seconds."""
+    def get_speaker_segments(self):
+        """Run diarization and return list of (start, end, speaker_label) segments.
+        Re-runs every DIARIZE_INTERVAL seconds, returns cached result between runs.
+        """
         now = time.time()
         if self._has_result and (now - self.last_diarize_time) < DIARIZE_INTERVAL:
-            return self.current_speaker
+            return self._cached_segments
 
         if len(self.buffer) < 128000 * 2:  # Need at least 8s
-            return self.current_speaker
+            return [(0, 999, self.current_speaker)]
 
         self.last_diarize_time = now
         self._has_result = True
@@ -467,47 +456,46 @@ class Diarizer:
             result = self.pipeline({"waveform": waveform, "sample_rate": 16000})
             diarization = result.speaker_diarization
 
-            # Find speaker in the last 4s of buffer
-            buffer_duration = len(self.buffer) / (16000 * 2)
-            target_start = max(0, buffer_duration - 4)
-            target_end = buffer_duration
-
-            speakers_in_window = []
+            # Extract all speaker segments with timestamps
+            segments = []
             for turn, _, speaker in diarization.itertracks(yield_label=True):
-                if turn.end > target_start and turn.start < target_end:
-                    overlap = min(turn.end, target_end) - max(turn.start, target_start)
-                    speakers_in_window.append((speaker, overlap))
+                # Map to stable label
+                if speaker not in self.speaker_map:
+                    stable_label = f"SPEAKER_{self.speaker_count:02d}"
+                    self.speaker_map[speaker] = stable_label
+                    self.speaker_count += 1
+                    log("DIAR", f"New speaker: {speaker} -> {stable_label} ({self.speaker_count} total)")
+                stable = self.speaker_map[speaker]
+                segments.append((turn.start, turn.end, stable))
 
-            if not speakers_in_window:
-                return self.current_speaker
+            if not segments:
+                segments = [(0, 999, self.current_speaker)]
 
-            # Pick speaker with most overlap
-            speakers_in_window.sort(key=lambda x: x[1], reverse=True)
-            pyannote_label = speakers_in_window[0][0]
+            self._cached_segments = segments
+            self.current_speaker = segments[-1][2]
 
-            # Map to stable label
-            if pyannote_label not in self.speaker_map:
-                stable_label = f"SPEAKER_{self.speaker_count:02d}"
-                self.speaker_map[pyannote_label] = stable_label
-                self.speaker_count += 1
-                log("DIAR", f"New speaker: {pyannote_label} -> {stable_label} ({self.speaker_count} total)")
+            # Log if multiple speakers
+            unique_speakers = set(s[2] for s in segments)
+            if len(unique_speakers) > 1:
+                log("DIAR", f"Speakers: {sorted(unique_speakers)}")
 
-            self.current_speaker = self.speaker_map[pyannote_label]
-
-            # Log if multiple speakers detected
-            all_labels = list(diarization.labels())
-            if len(all_labels) > 1:
-                mapped = [self.speaker_map.get(l, l) for l in all_labels]
-                log("DIAR", f"Speakers in buffer: {mapped}")
-
-            return self.current_speaker
+            return segments
 
         except Exception as e:
             log("DIAR", f"Error: {e}")
-            return self.current_speaker
+            return [(0, 999, self.current_speaker)]
         finally:
             if os.path.exists(tmp_wav.name):
                 os.remove(tmp_wav.name)
+
+    def get_speaker_for_time(self, t, segments=None):
+        """Get speaker label for a specific timestamp."""
+        if segments is None:
+            segments = self._cached_segments if self._has_result else [(0, 999, self.current_speaker)]
+        for start, end, speaker in segments:
+            if start <= t <= end:
+                return speaker
+        return self.current_speaker
 
 
 # ============================================================
@@ -748,32 +736,39 @@ def main():
             transcriber.add_speech(speech)
             silence_counter = 0
 
-            # Try incremental transcription
+            # Try incremental transcription with timestamps
             transcribe_start = time.time()
-            new_text, full_text = transcriber.transcribe_incremental()
+            new_segs = transcriber.get_new_segments()
             transcribe_elapsed = time.time() - transcribe_start
 
-            if full_text and not new_text:
-                log("STT", f"Buffer: {len(transcriber.audio_buffer)/16000:.1f}s, text: {full_text[:60]}...")
+            if new_segs:
+                # Get speaker segments from diarizer
+                speaker_segments = None
+                if diarizer:
+                    speaker_segments = diarizer.get_speaker_segments()
 
-            if new_text and len(new_text) >= 3:
-                if new_text.lower().strip() not in SKIP_PHRASES:
-                    # Get speaker label
+                # Write latency
+                try:
+                    with open(LATENCY_FILE, 'w') as f:
+                        f.write(f'{transcribe_elapsed:.1f}s')
+                except Exception:
+                    pass
+
+                # Process each new segment
+                for seg in new_segs:
+                    text = seg['text'].strip()
+                    if not text or len(text) < 3 or text.lower().strip() in SKIP_PHRASES:
+                        continue
+
+                    # Match speaker using timestamp
                     speaker_label = "SPEAKER_00"
-                    if diarizer:
-                        speaker_label = diarizer.get_speaker()
+                    if diarizer and speaker_segments:
+                        speaker_label = diarizer.get_speaker_for_time(seg['start'], speaker_segments)
 
                     speaker_names = get_speaker_names()
                     display_name = format_speaker(speaker_label, speaker_names)
 
-                    # Write latency
-                    try:
-                        with open(LATENCY_FILE, 'w') as f:
-                            f.write(f'{transcribe_elapsed:.1f}s')
-                    except:
-                        pass
-
-                    # Append to transcript
+                    # Append to transcript with minute separator
                     current_minute = time.strftime('%H:%M')
                     if current_minute != last_minute_stamp:
                         transcript_buffer.append(f"--- {current_minute} ---")
@@ -781,9 +776,9 @@ def main():
 
                     # If last line is from the same speaker, append to it
                     if transcript_buffer and transcript_buffer[-1].startswith(f"{display_name}: "):
-                        transcript_buffer[-1] += " " + new_text
+                        transcript_buffer[-1] += " " + text
                     else:
-                        transcript_buffer.append(f"{display_name}: {new_text}")
+                        transcript_buffer.append(f"{display_name}: {text}")
 
                     if len(transcript_buffer) > 1000:
                         transcript_buffer = transcript_buffer[-1000:]
@@ -791,11 +786,11 @@ def main():
                     with open(TRANSCRIPT_FILE, 'w') as f:
                         f.write('\n'.join(transcript_buffer))
 
-                    log("HEARD", f"({transcribe_elapsed:.1f}s) [{display_name}] {new_text[:80]}")
+                    log("HEARD", f"({transcribe_elapsed:.1f}s) [{display_name}] {text[:80]}")
 
                     # Talk mode — check if agent name is in the text
                     current_mode = get_mode()
-                    if current_mode == 'talk' and thinker and agent_name.lower() in new_text.lower():
+                    if current_mode == 'talk' and thinker and agent_name.lower() in text.lower():
                         now = time.time()
                         if (now - last_think_time) >= THINK_INTERVAL:
                             recent = '\n'.join(transcript_buffer[-10:])
@@ -820,13 +815,10 @@ def main():
                             else:
                                 log("LLM", "[SILENCE]")
         else:
-            # Silence — after timeout, commit the current utterance
+            # Silence — after timeout, clear buffer for next utterance
             silence_counter += 1
-            if silence_counter >= SILENCE_TIMEOUT * 2 and transcriber.committed_text:
-                # Commit the utterance
-                committed = transcriber.commit_and_clear()
-                if committed and committed.lower().strip() not in SKIP_PHRASES:
-                    log("UTTERANCE", f"Committed: {committed[:80]}...")
+            if silence_counter >= SILENCE_TIMEOUT * 2 and len(transcriber.audio_buffer) > 0:
+                transcriber.clear()
                 silence_counter = 0
 
     # Save final transcript
