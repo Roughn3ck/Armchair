@@ -2,7 +2,7 @@
 
 **Real-time streaming Voice-to-Text + AI Agent for Microsoft Teams.** Invisible. Local. Free.
 
-Agent In The Armchair sits in your Teams meetings, listens, transcribes with speaker labels, and can speak when directly addressed — in real time, on your hardware, with zero per-hour costs. No bot joins the meeting. Teams doesn't know it's there.
+Agent In The Armchair sits in your Teams meetings, listens, transcribes with speaker labels, and speaks when directly addressed — in real time, on your hardware, with zero per-hour costs. No bot joins the meeting. Teams doesn't know it's there.
 
 Part of [The Pack](https://github.com/Roughn3ck/ExecutiveMind) at [Executive Mind](https://executivemind.io).
 
@@ -11,51 +11,39 @@ Part of [The Pack](https://github.com/Roughn3ck/ExecutiveMind) at [Executive Min
 ## Architecture (v2 — Streaming)
 
 ```
-Teams Meeting Audio (speaker output)
+Teams Meeting Audio (speaker output) + Local Mic
        ↓
-CABLE-A Input (Teams playback device)
+ffmpeg amix (mixes meeting audio + mic into one 16kHz mono stream)
        ↓
-CABLE-A Output → ffmpeg (16kHz mono PCM, continuous stream)
-       ↓
-B:\armchair_audio.raw
+B:\armchair_audio.raw (continuous PCM stream)
        ↓
 WSL: armchair_live.py (streaming pipeline)
        ↓
 Silero VAD — detects speech, skips silence (nearly free on GPU)
        ↓
-faster-whisper streaming — incremental transcription via local agreement
+faster-whisper streaming — incremental transcription with word timestamps
        ↓
-pyannote-audio (16s rolling buffer, every 10s) — speaker labels
+pyannote-audio (16s rolling buffer, every 10s) — per-segment speaker labels
        ↓
 Dashboard (http://localhost:8765) with live labeled transcript
        ↓
-[If Talk mode + agent name detected]
+[If Talk mode + agent name detected in speech]
        ↓
-LLM gate: "Am I being directly addressed?"
+LLM gate (Ollama): "Am I being directly addressed?"
        ↓
-Yes → Piper TTS → WAV → CABLE-A Input → meeting hears agent
+Yes → Piper TTS (British RP voice) → WAV → PowerShell → CABLE-A → meeting hears agent
 No  → [SILENCE] — agent stays quiet
 ```
 
-### v1 → v2 Architecture Change
+### Key Design Decisions
 
-**v1 (chunk-based):** Fixed 4s chunks → transcribe each chunk → diarize each chunk.
-
-**Problems with v1:**
-- Diarization can't work on 4s chunks (pyannote needs 16-30s context)
-- SPEAKER_UNKNOWN flickered between diarization runs
-- GPU heavy — running Whisper + pyannote on every 4s chunk, even silence
-- No partial results — 4s minimum latency before any text appears
-- Chunk boundaries cut words mid-sentence
-
-**v2 (streaming):** VAD-driven → only process speech → incremental transcription → separate diarization on rolling buffer.
-
-**Benefits of v2:**
-- VAD skips silence — Whisper only runs on actual speech
-- Incremental transcription — text appears as words become confident (local agreement)
-- Diarization runs independently on 16s rolling buffer — accurate speaker separation
-- No SPEAKER_UNKNOWN — defaults to last known speaker, only updates when a new speaker is confirmed
-- Much lighter on GPU — VAD is nearly free, Whisper only on speech, pyannote every 10s
+- **No bot joins the meeting.** Hardware audio capture via VB-Cable. Teams can't block it.
+- **No third-party APIs.** Runs entirely on local hardware. Zero per-hour cost.
+- **VAD-driven, not time-driven.** Silero VAD detects speech, only sends speech to Whisper. Silence is skipped.
+- **Per-segment speaker matching.** Whisper word timestamps matched to pyannote speaker segments. Handles mid-utterance speaker switches.
+- **LLM gate for direct address.** The LLM decides if it's being addressed vs mentioned. No keyword matching.
+- **Piper TTS, not Kokoro.** 12x faster (1s vs 12s). Standard voices. Alan (British RP) is the default.
+- **Session management.** Each session archived to its own folder with transcript, audio, and speaker data.
 
 ## What's Here
 
@@ -64,22 +52,26 @@ No  → [SILENCE] — agent stays quiet
 | `armchair_live.py` | Main streaming pipeline (VTT + diarization + LLM + TTS) |
 | `dashboard_server.py` | HTTP server for live dashboard + API |
 | `dashboard.html` | Web dashboard with speaker naming, agent config, mode toggle |
-| `stream_to_file.bat` | Windows ffmpeg audio capture |
+| `stream_to_file.bat` | Windows ffmpeg audio capture (meeting audio + mic) |
+| `start_armchair.bat` | One-click launcher (audio + dashboard + pipeline + browser) |
 | `setup_audio.bat` | Audio routing setup guide |
+| `voices/` | Sample voice files (British + American) with README |
 | `requirements.txt` | Python dependencies |
+| `STATUS.md` | Full architecture history and component docs |
 
 ## Features
 
 ### Streaming VTT
-- Silero VAD detects speech, skips silence (nearly free on GPU)
-- faster-whisper with local agreement policy — text appears incrementally
-- No fixed chunk boundaries — processes as audio arrives
+- Silero VAD detects speech, skips silence
+- faster-whisper with incremental transcription (word timestamps)
+- ~0.3s transcription latency
 
 ### Speaker Diarization
 - pyannote-audio on 16s rolling buffer (runs every 10s)
-- Speakers labeled as SPEAKER_00, SPEAKER_01, etc.
-- Stable labels — no flickering between speakers
-- Dashboard speaker naming: assign names mid-call, applies retroactively
+- Per-segment speaker labels matched to Whisper word timestamps
+- Handles mid-utterance speaker switches
+- Dashboard speaker naming: auto-populates detected speakers, type names, applies retroactively
+- Label button for explicit save
 
 ### Talk / Listen Mode
 - 🔇 Listen: Pure VTT with speaker labels
@@ -88,12 +80,19 @@ No  → [SILENCE] — agent stays quiet
 - Agent name configurable in dashboard
 
 ### TTS (Piper)
-- Piper TTS — fast, ~1s generation on CPU
-- Voice configurable in dashboard
+- British RP voice (Alan) — fast, ~1s generation
+- Configurable speed (--length-scale)
+- Voice selectable from dashboard dropdown
 
-### Post-Call Memory
-- Transcript saved with speaker labels + agent responses
-- Speaker names mapping saved to JSON
+### Session Management
+- Each session creates `B:\armchair_tmp\session_logs\YYYY-MM-DD_HHMMSS\`
+- On shutdown: saves transcript.txt, speaker_names.json, detected_speakers.json, audio.raw
+- Clean start each time — no bleed between sessions
+
+### One-Click Launcher
+- `start_armchair.bat` — double-click to start everything
+- Opens audio capture, dashboard, browser, and pipeline
+- Ctrl+C stops and saves session
 
 ## Setup
 
@@ -121,18 +120,42 @@ pip install -r requirements.txt
 1. Run `setup_audio.bat` on Windows
 2. Set Windows default playback → CABLE-A Input
 3. Enable "Listen to this device" on CABLE-A Output → your stereo speakers
-4. Teams mic stays on your normal microphone
+4. Teams mic → your normal microphone
 
 ### Running the Pipeline
 
-**Terminal 1 (Windows):** `stream_to_file.bat`
+**One-click:** Double-click `start_armchair.bat`
 
-**Terminal 2 (WSL):**
-```bash
-/home/krisr/.local/share/whisper-venv/bin/python3 armchair_live.py
-```
+**Or manually:**
+1. Windows: `stream_to_file.bat`
+2. WSL: `python3 armchair_live.py`
+3. Browser: `http://localhost:8765`
 
-**Browser:** `http://localhost:8765`
+## Latency
+
+| Step | Time |
+|------|------|
+| VAD (Silero) | ~0ms (nearly free) |
+| Whisper (CUDA) | ~0.3s |
+| pyannote (CUDA) | ~1.5s (every 10s) |
+| LLM gate (Ollama) | ~1-2s |
+| Piper TTS | ~1s |
+| Audio playback | ~0.5s |
+| **Total (Listen mode)** | **~0.3s** |
+| **Total (Talk mode)** | **~3-4s** |
+
+## Voices
+
+See `voices/README.md` for the full list of sample voices.
+
+| Voice | Accent | Recommended |
+|-------|--------|:-----------:|
+| **Alan** | British RP | ⭐ |
+| Aru | British | |
+| Northern English Male | Northern UK | |
+| Norman | US, deep | |
+
+Download more from [Piper Voices](https://github.com/rhasspy/piper/blob/master/VOICES.md).
 
 ## License
 
