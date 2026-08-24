@@ -328,15 +328,19 @@ class StreamingTranscriber:
             self.audio_buffer = self.audio_buffer[excess:]
 
     def transcribe_incremental(self):
-        """Transcribe current buffer. Returns (new_text, full_text)."""
+        """Transcribe current buffer. Returns (new_text, full_text).
+
+        Simple diff approach: transcribe the buffer, compare to last output,
+        return whatever is new. No local agreement needed — the buffer slides
+        so we just track the last full transcription and diff against it.
+        """
         if len(self.audio_buffer) < 1600:  # Need at least 0.1s
             return "", self.committed_text
 
         try:
-            # Transcribe the buffer
             segments, _ = self.model.transcribe(
                 self.audio_buffer, beam_size=5, language='en',
-                vad_filter=False,  # VAD already done
+                vad_filter=False,
                 condition_on_previous_text=False
             )
             current_text = ' '.join(seg.text.strip() for seg in segments).strip()
@@ -344,26 +348,28 @@ class StreamingTranscriber:
             if not current_text:
                 return "", self.committed_text
 
-            # Simple local agreement: if the new transcription starts with the
-            # old committed text, the prefix is confirmed — output the new part.
-            # If it doesn't match, the buffer content shifted — replace.
+            # Find the new text: whatever is in current_text that wasn't in last_text
             new_text = ""
-
             if not self.last_committed:
-                # First transcription
-                self.committed_text = current_text
-                self.last_committed = current_text
                 new_text = current_text
             elif current_text.startswith(self.last_committed):
-                # Prefix matches — new text is the difference
+                # Buffer grew — new text is the tail
                 new_text = current_text[len(self.last_committed):].strip()
-                self.committed_text = current_text
-                self.last_committed = current_text
+            elif self.last_committed in current_text:
+                # Last text is a substring of current — find what comes after
+                idx = current_text.find(self.last_committed)
+                new_text = current_text[idx + len(self.last_committed):].strip()
             else:
-                # Text changed (buffer shifted) — just update, no new output
-                self.committed_text = current_text
+                # Text shifted completely — the buffer slid past old audio
+                # Output the whole new text as a new utterance
+                new_text = current_text
+                # Reset to avoid repeated output
                 self.last_committed = current_text
+                self.committed_text = current_text
+                return new_text, current_text
 
+            self.committed_text = current_text
+            self.last_committed = current_text
             return new_text, self.committed_text
 
         except Exception as e:
