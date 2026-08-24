@@ -207,7 +207,7 @@ class AudioStreamReader:
             return None
 
         available = current_size - self.offset
-        if available < self.read_chunk:
+        if available < 1024:  # Need at least 512 samples (1024 bytes)
             return None
 
         try:
@@ -232,7 +232,7 @@ class VAD:
 
     def __init__(self, threshold=VAD_THRESHOLD, min_speech_sec=VAD_MIN_SPEECH):
         import torch
-        self.model = torch.hub.load('snakers4/silero-vad', 'silero_vad', trust_repo=True)
+        self.model = torch.hub.load('snakers4/silero-vad', 'silero_vad', trust_repo=True)[0]
         self.threshold = threshold
         self.min_speech_sec = min_speech_sec
         self.speech_frames = 0
@@ -732,6 +732,9 @@ def main():
         speech = vad.process(audio)
 
         if speech is not None:
+            log("VAD", f"Speech detected: {len(speech)} samples ({len(speech)/16000:.1f}s)")
+
+        if speech is not None:
             # We have speech — add to transcriber buffer
             transcriber.add_speech(speech)
             silence_counter = 0
@@ -740,6 +743,9 @@ def main():
             transcribe_start = time.time()
             new_text, full_text = transcriber.transcribe_incremental()
             transcribe_elapsed = time.time() - transcribe_start
+
+            if full_text and not new_text:
+                log("STT", f"Buffer: {len(transcriber.audio_buffer)/16000:.1f}s, text: {full_text[:60]}...")
 
             if new_text and len(new_text) >= 3:
                 if new_text.lower().strip() not in SKIP_PHRASES:
