@@ -267,7 +267,18 @@ class Transcriber:
 # SPEAKER DIARIZATION (pyannote-audio, CUDA)
 # ============================================================
 class Diarizer:
-    SIMILARITY_THRESHOLD = 0.75  # cosine similarity to match a known speaker
+    """Buffer-based speaker diarization.
+
+    Accumulates audio chunks into a 30s rolling buffer, runs pyannote on the
+    full buffer for accurate speaker separation, then maps the speaker label
+    of the most recent chunk back to the transcription.
+
+    This is necessary because 4s chunks in isolation don't give pyannote enough
+    context to distinguish speakers — all chunks get labeled SPEAKER_00.
+    """
+
+    BUFFER_SECONDS = 30  # Rolling buffer size for diarization context
+    CHUNK_SECONDS = 4     # Size of each transcription chunk
 
     def __init__(self, min_speakers=2, max_speakers=10):
         log("DIAR", "Loading pyannote-audio pipeline...")
@@ -275,12 +286,9 @@ class Diarizer:
         import torch
         import numpy as np
 
-        # Disable cuDNN to avoid version conflict between faster-whisper (cu12 cuDNN)
-        # and PyTorch 2.13 (cu13 cuDNN). CUDA still works — just no cuDNN acceleration.
         torch.backends.cudnn.enabled = False
         log("DIAR", "cuDNN disabled (avoids cu12/cu13 version conflict)")
 
-        # Read HF token from .env file if not in environment
         token = os.environ.get('HF_TOKEN', '')
         if not token:
             try:
@@ -303,40 +311,39 @@ class Diarizer:
         else:
             log("DIAR", "CUDA not available, running on CPU")
 
-        # Speaker embedding database: {label: [embedding_array, ...]}
-        self.known_speakers = {}  # {"SPEAKER_00": np.array([...]), "SPEAKER_01": ...}
+        self.buffer = bytearray()  # Rolling PCM buffer
+        self.buffer_max = self.BUFFER_SECONDS * 16000 * 2  # 30s of 16kHz 16-bit mono
+        self.last_diarize_time = 0
+        self.DIARIZE_INTERVAL = 8  # Re-run diarization every 8s (not every chunk)
+        self.speaker_map = {}  # Maps pyannote labels to stable labels
         self.speaker_count = 0
         self.np = np
-        log("DIAR", "Ready (embedding-based speaker tracking)")
+        self.torch = torch
+        self._last_label = "SPEAKER_00"
+        log("DIAR", f"Ready (30s rolling buffer, diarize every {self.DIARIZE_INTERVAL}s)")
 
-    def _cosine_similarity(self, a, b):
-        """Cosine similarity between two numpy arrays."""
-        return float(self.np.dot(a, b) / (self.np.linalg.norm(a) * self.np.linalg.norm(b) + 1e-8))
-
-    def _match_speaker(self, embedding):
-        """Match embedding to known speaker. Returns (label, similarity) or (None, 0)."""
-        best_match = None
-        best_sim = 0.0
-        for label, ref_embedding in self.known_speakers.items():
-            sim = self._cosine_similarity(embedding, ref_embedding)
-            if sim > best_sim:
-                best_sim = sim
-                best_match = label
-        return best_match, best_sim
-
-    def _register_speaker(self, embedding):
-        """Register a new speaker with the given embedding."""
-        label = f"SPEAKER_{self.speaker_count:02d}"
-        self.known_speakers[label] = embedding
-        self.speaker_count += 1
-        log("DIAR", f"New speaker registered: {label} (total: {self.speaker_count})")
-        return label
-
-    def diarize_pcm(self, pcm_data, sample_rate=16000):
-        """Run diarization on a PCM chunk. Returns primary speaker label for the chunk."""
-        import torch
+    def diarize_chunk(self, pcm_data, sample_rate=16000):
+        """Add chunk to buffer, return speaker label for the most recent chunk."""
         import soundfile as sf
         import tempfile
+
+        # Append to buffer
+        self.buffer.extend(pcm_data)
+        if len(self.buffer) > self.buffer_max:
+            # Keep only the last buffer_max bytes
+            excess = len(self.buffer) - self.buffer_max
+            self.buffer = self.buffer[excess:]
+
+        # Only re-run diarization every DIARIZE_INTERVAL seconds
+        now = time.time()
+        if now - self.last_diarize_time < self.DIARIZE_INTERVAL and self.speaker_map:
+            # Return last known label for the most recent speaker
+            return self._last_label or "SPEAKER_00"
+
+        self.last_diarize_time = now
+
+        if len(self.buffer) < 128000 * 2:  # Need at least 8s of audio
+            return "SPEAKER_00"
 
         tmp_wav = tempfile.NamedTemporaryFile(suffix='.wav', dir='/tmp/armchair', delete=False)
         tmp_wav.close()
@@ -345,49 +352,54 @@ class Diarizer:
                 wf.setnchannels(1)
                 wf.setsampwidth(2)
                 wf.setframerate(sample_rate)
-                wf.writeframes(pcm_data)
+                wf.writeframes(bytes(self.buffer))
 
-            # Load audio with soundfile (avoids torchaudio/torchcodec dependency)
             audio_data, sr = sf.read(tmp_wav.name, dtype='float32')
+            waveform = self.torch.from_numpy(audio_data).unsqueeze(0)
 
-            # Convert to torch tensor: shape (channel, time) = (1, samples)
-            waveform = torch.from_numpy(audio_data).unsqueeze(0)
-
-            # Run diarization
-            result = self.pipeline(
-                {"waveform": waveform, "sample_rate": sample_rate}
-            )
-
-            # Get speaker embedding from result
-            embeddings = result.speaker_embeddings
-            if embeddings is not None and len(embeddings) > 0:
-                # Use the first (and usually only) embedding
-                chunk_embedding = self.np.array(embeddings[0])
-
-                # Match against known speakers
-                match_label, sim = self._match_speaker(chunk_embedding)
-
-                if match_label and sim >= self.SIMILARITY_THRESHOLD:
-                    # Update the reference embedding (running average for stability)
-                    old = self.known_speakers[match_label]
-                    self.known_speakers[match_label] = 0.7 * old + 0.3 * chunk_embedding
-                    return match_label
-                else:
-                    # No match — register new speaker
-                    label = self._register_speaker(chunk_embedding)
-                    return label
-
-            # Fallback: use diarization labels directly
+            result = self.pipeline({"waveform": waveform, "sample_rate": sample_rate})
             diarization = result.speaker_diarization
-            labels = list(diarization.labels())
-            if labels:
-                return labels[0]
 
-            return "SPEAKER_UNKNOWN"
+            # Get the speaker speaking in the last 4 seconds of the buffer
+            buffer_duration = len(self.buffer) / (sample_rate * 2)
+            target_start = max(0, buffer_duration - self.CHUNK_SECONDS)
+            target_end = buffer_duration
+
+            # Find who is speaking in the target window
+            speakers_in_window = []
+            for turn, _, speaker in diarization.itertracks(yield_label=True):
+                # Check overlap with target window
+                if turn.end > target_start and turn.start < target_end:
+                    overlap = min(turn.end, target_end) - max(turn.start, target_start)
+                    speakers_in_window.append((speaker, overlap))
+
+            if not speakers_in_window:
+                return self._last_label or "SPEAKER_00"
+
+            # Pick the speaker with the most overlap in the target window
+            speakers_in_window.sort(key=lambda x: x[1], reverse=True)
+            pyannote_label = speakers_in_window[0][0]
+
+            # Map pyannote's label to our stable labels
+            if pyannote_label not in self.speaker_map:
+                stable_label = f"SPEAKER_{self.speaker_count:02d}"
+                self.speaker_map[pyannote_label] = stable_label
+                self.speaker_count += 1
+                log("DIAR", f"Mapped {pyannote_label} -> {stable_label} ({len(self.speaker_map)} speakers)")
+
+            label = self.speaker_map[pyannote_label]
+            self._last_label = label
+
+            # Log all speakers found in buffer
+            all_labels = list(diarization.labels())
+            if len(all_labels) > 1:
+                log("DIAR", f"Buffer has {len(all_labels)} speakers: {all_labels}")
+
+            return label
 
         except Exception as e:
             log("DIAR", f"Error: {e}")
-            return "SPEAKER_UNKNOWN"
+            return self._last_label or "SPEAKER_UNKNOWN"
         finally:
             if os.path.exists(tmp_wav.name):
                 os.remove(tmp_wav.name)
@@ -647,7 +659,7 @@ def main():
         speaker_label = "SPEAKER_UNKNOWN"
         if diarizer:
             diarize_start = time.time()
-            speaker_label = diarizer.diarize_pcm(chunk_data)
+            speaker_label = diarizer.diarize_chunk(chunk_data)
             diarize_elapsed = time.time() - diarize_start
             log("DIAR", f"({diarize_elapsed:.1f}s) {speaker_label}")
 
