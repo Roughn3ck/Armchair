@@ -35,12 +35,46 @@ import argparse
 import threading
 import subprocess
 import urllib.request
+import urllib.error
 import shutil
 import re
 import numpy as np
 
 # Add whisper_streaming to path
 sys.path.insert(0, '/tmp/whisper_streaming')
+
+# ============================================================
+# .ENV LOADER
+# ============================================================
+_ENV_CACHE = {}
+
+def load_env(env_path=None):
+    """Load .env file into _ENV_CACHE. Called once at startup."""
+    if env_path is None:
+        env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+    if not os.path.exists(env_path):
+        return
+    with open(env_path, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            if '=' in line:
+                key, _, val = line.partition('=')
+                key = key.strip()
+                val = val.strip().strip('"').strip("'")
+                _ENV_CACHE[key] = val
+    log("ENV", f"Loaded {len(_ENV_CACHE)} keys from {env_path}")
+
+def env(key, default=''):
+    """Get env value: .env file > os.environ > default."""
+    if key in _ENV_CACHE:
+        return _ENV_CACHE[key]
+    return os.environ.get(key, default)
+
+def env_bool(key, default=False):
+    v = env(key, '').lower()
+    return v in ('1', 'true', 'yes', 'on') if v else default
 
 # ============================================================
 # CONFIG
@@ -65,13 +99,17 @@ VAD_MAX_BUFFER = 10    # Max seconds of audio in Whisper buffer
 DIARIZE_INTERVAL = 10  # Re-run diarization every N seconds
 DIAR_BUFFER_SECONDS = 16  # Rolling buffer for diarization
 
-# LLM config (Ollama)
+# LLM config — provider-agnostic (read from .env or agent_config.json)
+LLM_PROVIDER_DEFAULT = "ollama"  # ollama | openai | anthropic | tokenra | openrouter
 LLM_MODEL_DEFAULT = "deepseek-v4-flash:cloud"
 LLM_API_HOST = "localhost"
 LLM_API_PORT = 11434
 LLM_API_PATH = "/api/chat"
 LLM_MAX_TOKENS = 150
 LLM_TEMPERATURE = 0.7
+
+# Timezone (defaults to system; user can override in dashboard)
+TZ_OVERRIDE = None  # e.g. "America/Montreal" — set by dashboard settings
 
 # TTS config (engines)
 TTS_VOICE_DEFAULT = "en_GB-alan-medium"
@@ -128,7 +166,15 @@ SKIP_PHRASES = {
 
 
 def log(tag, msg):
-    ts = time.strftime("%H:%M:%S")
+    if TZ_OVERRIDE:
+        try:
+            import datetime as _dt
+            tz = _dt.timezone(_dt.timedelta(hours=TZ_OVERRIDE[0], minutes=TZ_OVERRIDE[1])) if isinstance(TZ_OVERRIDE, tuple) else None
+            ts = _dt.datetime.now(tz).strftime("%H:%M:%S")
+        except Exception:
+            ts = time.strftime("%H:%M:%S")
+    else:
+        ts = time.strftime("%H:%M:%S")
     print(f"[{ts}] [{tag}] {msg}", flush=True)
 
 
@@ -178,11 +224,13 @@ def get_agent_config():
     return load_json(AGENT_CONFIG_FILE, {
         'name': AGENT_NAME_DEFAULT,
         'voice': TTS_VOICE_DEFAULT,
+        'llm_provider': LLM_PROVIDER_DEFAULT,
         'llm_model': LLM_MODEL_DEFAULT,
         'persona': AGENT_PERSONA_DEFAULT,
         'tts_engine': TTS_ENGINE_DEFAULT,
         'tts_reference': CHATTERBOX_REF_DEFAULT,
         'memory_dir': '',
+        'timezone': '',
     })
 
 
@@ -574,18 +622,45 @@ class Diarizer:
 
 
 # ============================================================
-# LLM THINKER (Ollama API)
+# LLM CLIENT (provider-agnostic: ollama | openai | anthropic | tokenra | openrouter)
 # ============================================================
-class Thinker:
-    def __init__(self, model_id, agent_name, persona, identity_context=""):
-        self.model_id = model_id
+PROVIDER_ENDPOINTS = {
+    'openai': 'https://api.openai.com/v1/chat/completions',
+    'anthropic': 'https://api.anthropic.com/v1/messages',
+    'openrouter': 'https://openrouter.ai/api/v1/chat/completions',
+    'tokenra': 'https://api.tokenra.ai/v1/chat/completions',  # adjust if different
+}
+
+
+class LLMClient:
+    """Provider-agnostic LLM client.
+
+    Supports: ollama (local), openai, anthropic, tokenra, openrouter.
+    Provider + credentials from .env; model from agent_config or .env.
+    """
+    def __init__(self, provider, model, agent_name, persona, identity_context=""):
+        self.provider = provider
+        self.model = model
         self.agent_name = agent_name
         self.persona = persona.replace('{agent_name}', agent_name)
-        # Prepend identity context to the system prompt
         if identity_context:
             self.persona = f"{identity_context}\n\n--- PERSONA ---\n{self.persona}"
             log("LLM", f"System prompt: {len(self.persona)} chars (identity + persona)")
         self.conversation = []
+        self.api_key = self._get_api_key()
+        log("LLM", f"Provider: {provider}, Model: {model}")
+
+    def _get_api_key(self):
+        key_map = {
+            'openai': 'OPENAI_API_KEY',
+            'anthropic': 'ANTHROPIC_API_KEY',
+            'openrouter': 'OPENROUTER_API_KEY',
+            'tokenra': 'TOKENRA_API_KEY',
+        }
+        env_key = key_map.get(self.provider, '')
+        if env_key:
+            return env(env_key, '')
+        return ''  # ollama doesn't need a key
 
     def think(self, transcript):
         if not transcript or len(transcript) < 5:
@@ -599,8 +674,29 @@ class Thinker:
         if len(self.conversation) > 20:
             self.conversation = self.conversation[-20:]
 
+        try:
+            if self.provider == 'ollama':
+                response_text = self._call_ollama()
+            elif self.provider == 'anthropic':
+                response_text = self._call_anthropic()
+            else:
+                # openai-compatible: openai, openrouter, tokenra
+                response_text = self._call_openai_compatible()
+
+            if response_text:
+                if "[SILENCE]" in response_text.upper():
+                    self.conversation.append({"role": "assistant", "content": "[SILENCE]"})
+                    return None
+                self.conversation.append({"role": "assistant", "content": response_text})
+                return response_text
+            return None
+        except Exception as e:
+            log("LLM", f"Error ({self.provider}): {e}")
+            return None
+
+    def _call_ollama(self):
         payload = json.dumps({
-            "model": self.model_id,
+            "model": self.model,
             "messages": [
                 {"role": "system", "content": self.persona},
                 *self.conversation
@@ -612,27 +708,77 @@ class Thinker:
                 "temperature": LLM_TEMPERATURE
             }
         })
+        host = env('LLM_API_HOST', LLM_API_HOST)
+        port = env('LLM_API_PORT', str(LLM_API_PORT))
+        path = env('LLM_API_PATH', LLM_API_PATH)
+        req = urllib.request.Request(
+            f"http://{host}:{port}{path}",
+            data=payload.encode('utf-8'),
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read().decode('utf-8'))
+            return result.get("message", {}).get("content", "").strip()
 
-        try:
-            req = urllib.request.Request(
-                f"http://{LLM_API_HOST}:{LLM_API_PORT}{LLM_API_PATH}",
-                data=payload.encode('utf-8'),
-                headers={"Content-Type": "application/json"}
-            )
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                result = json.loads(resp.read().decode('utf-8'))
-                response_text = result.get("message", {}).get("content", "").strip()
+    def _call_openai_compatible(self):
+        endpoint = PROVIDER_ENDPOINTS.get(self.provider, '')
+        if not endpoint:
+            raise ValueError(f"Unknown provider: {self.provider}")
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}"
+        }
+        # OpenRouter requires HTTP-Referer header
+        if self.provider == 'openrouter':
+            headers['HTTP-Referer'] = 'https://executivemind.io'
+            headers['X-Title'] = 'Agent In The Armchair'
 
-                if response_text:
-                    if "[SILENCE]" in response_text.upper():
-                        self.conversation.append({"role": "assistant", "content": "[SILENCE]"})
-                        return None
-                    self.conversation.append({"role": "assistant", "content": response_text})
-                    return response_text
-                return None
-        except Exception as e:
-            log("LLM", f"Error: {e}")
-            return None
+        payload = json.dumps({
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": self.persona},
+                *self.conversation
+            ],
+            "stream": False,
+            "max_tokens": LLM_MAX_TOKENS,
+            "temperature": LLM_TEMPERATURE
+        })
+        req = urllib.request.Request(
+            endpoint,
+            data=payload.encode('utf-8'),
+            headers=headers
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read().decode('utf-8'))
+            return result.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+
+    def _call_anthropic(self):
+        endpoint = PROVIDER_ENDPOINTS['anthropic']
+        headers = {
+            "Content-Type": "application/json",
+            "x-api-key": self.api_key,
+            "anthropic-version": "2023-06-01"
+        }
+        # Anthropic separates system from messages
+        messages = []
+        for msg in self.conversation:
+            messages.append({"role": msg["role"], "content": msg["content"]})
+
+        payload = json.dumps({
+            "model": self.model,
+            "system": self.persona,
+            "messages": messages,
+            "max_tokens": LLM_MAX_TOKENS,
+            "temperature": LLM_TEMPERATURE
+        })
+        req = urllib.request.Request(
+            endpoint,
+            data=payload.encode('utf-8'),
+            headers=headers
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read().decode('utf-8'))
+            return result.get("content", [{}])[0].get("text", "").strip()
 
 
 # ============================================================
@@ -859,6 +1005,7 @@ def main():
     parser.add_argument("--agent-name", default=None)
     parser.add_argument("--voice", default=None)
     parser.add_argument("--llm", default=None)
+    parser.add_argument("--llm-provider", default=None)
     parser.add_argument("--no-diarization", action="store_true")
     parser.add_argument("--no-tts", action="store_true")
     args = parser.parse_args()
@@ -866,6 +1013,9 @@ def main():
     os.makedirs("/tmp/armchair", exist_ok=True)
     os.makedirs(TTS_OUTPUT_DIR, exist_ok=True)
     os.makedirs(TTS_PLAYBACK_DIR, exist_ok=True)
+
+    # Load .env (API keys, provider config)
+    load_env()
 
     # Create session folder
     session_start = time.strftime("%Y-%m-%d_%H%M%S")
@@ -881,14 +1031,32 @@ def main():
         agent_config['voice'] = args.voice
     if args.llm:
         agent_config['llm_model'] = args.llm
+    if args.llm_provider:
+        agent_config['llm_provider'] = args.llm_provider
     save_json(AGENT_CONFIG_FILE, agent_config)
 
     agent_name = agent_config['name']
     voice_model = agent_config['voice']
-    llm_model = agent_config.get('llm_model', LLM_MODEL_DEFAULT)
+    llm_provider = agent_config.get('llm_provider', env('LLM_PROVIDER', LLM_PROVIDER_DEFAULT))
+    llm_model = agent_config.get('llm_model', env('LLM_MODEL_DEFAULT', LLM_MODEL_DEFAULT))
     persona = agent_config.get('persona', AGENT_PERSONA_DEFAULT)
     tts_engine = agent_config.get('tts_engine', TTS_ENGINE_DEFAULT)
     tts_reference = agent_config.get('tts_reference', CHATTERBOX_REF_DEFAULT)
+
+    # Timezone override (dashboard setting)
+    global TZ_OVERRIDE
+    tz_str = agent_config.get('timezone', '').strip()
+    if tz_str:
+        try:
+            import zoneinfo
+            tz_info = zoneinfo.ZoneInfo(tz_str)
+            import datetime as _dt
+            offset = _dt.datetime.now(tz_info).utcoffset()
+            if offset:
+                TZ_OVERRIDE = (int(offset.total_seconds() // 3600), int((offset.total_seconds() % 3600) // 60))
+                log("ARMCHAIR", f"Timezone: {tz_str} (UTC{'+' if offset.total_seconds() >= 0 else ''}{TZ_OVERRIDE[0]}:{TZ_OVERRIDE[1]:02d})")
+        except Exception as e:
+            log("ARMCHAIR", f"Timezone '{tz_str}' invalid: {e}")
 
     # Load identity files from Identity/ folder + custom memory directory
     identity_context = load_identity(IDENTITY_DIR)
@@ -929,7 +1097,7 @@ def main():
     thinker = None
     speaker = None
     if not args.no_tts:
-        thinker = Thinker(llm_model, agent_name, persona, identity_context)
+        thinker = LLMClient(llm_provider, llm_model, agent_name, persona, identity_context)
         speaker = Speaker(voice_model, engine=tts_engine, tts_reference=tts_reference)
 
     transcript_buffer = []
@@ -944,7 +1112,7 @@ def main():
     log("ARMCHAIR", f"Whisper: {args.whisper_model} ({WHISPER_DEVICE})")
     log("ARMCHAIR", f"VAD: Silero (threshold={VAD_THRESHOLD})")
     log("ARMCHAIR", f"Diarization: {'enabled' if diarizer else 'disabled'}")
-    log("ARMCHAIR", f"LLM: {llm_model if thinker else 'disabled'}")
+    log("ARMCHAIR", f"LLM: {llm_provider}/{llm_model if thinker else 'disabled'}")
     log("ARMCHAIR", f"TTS: {tts_engine} ({voice_model if tts_engine == 'piper' else ('Muska ref' if tts_engine == 'chatterbox' else KOKORO_VOICE_DEFAULT)})" + (" — disabled" if not speaker else ""))
     if memory_dir:
         log("ARMCHAIR", f"Memory dir: {memory_dir}")

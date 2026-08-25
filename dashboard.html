@@ -136,7 +136,7 @@ body {
 <div class="header">
 <span class="emoji">🪑</span>
 <h1>Agent In The Armchair</h1>
-<span class="version">v2.2</span>
+<span class="version">v2.3</span>
 <a href="https://executivemind.io" target="_blank" class="brand-link">
 <img src="dashboard/assets/em-logo-grunge-dark.jpg" alt="Executive Mind">
 <span class="brand-text">Executive Mind</span>
@@ -195,6 +195,54 @@ body {
 </div>
 </div>
 
+<!-- ===== SETTINGS PANEL ===== -->
+<div class="config-panel" style="border-color: var(--em-cyan-dim);">
+<h3 style="color: var(--em-cyan); cursor: pointer;" onclick="toggleSettings()"><span id="settingsArrow">▶</span> Settings (LLM Provider, API Keys, Timezone)</h3>
+<div id="settingsBody" style="display:none;">
+<div class="config-row">
+<label>LLM Provider:</label>
+<select id="cfgLLMProvider" onchange="onProviderChange()">
+<option value="ollama">Ollama (local, free)</option>
+<option value="openai">OpenAI</option>
+<option value="anthropic">Anthropic</option>
+<option value="tokenra">TokenRa</option>
+<option value="openrouter">OpenRouter</option>
+</select>
+</div>
+<div class="config-row" id="rowLLMModel">
+<label>Model:</label>
+<input type="text" id="cfgLLMModel" placeholder="deepseek-v4-flash:cloud" onchange="saveAgentConfig()">
+</div>
+<div class="config-row" id="rowAPIKey" style="display:none;">
+<label>API Key:</label>
+<input type="password" id="cfgAPIKey" placeholder="Stored in .env, not here" onchange="saveAPIKey()">
+<button class="save-btn" onclick="testLLM()" id="btnTestLLM">Test</button>
+</div>
+<div class="config-row" id="rowOllamaHost" style="display:none;">
+<label>Ollama Host:</label>
+<input type="text" id="cfgOllamaHost" value="localhost" onchange="saveAgentConfig()" style="max-width: 120px; flex: 0 0 120px;">
+<span style="color: var(--em-text-faint); font-size: 13px;">:</span>
+<input type="text" id="cfgOllamaPort" value="11434" onchange="saveAgentConfig()" style="max-width: 80px; flex: 0 0 80px;">
+</div>
+<div class="config-row">
+<label>Timezone:</label>
+<select id="cfgTimezone" onchange="saveAgentConfig()">
+<option value="">System Default</option>
+<option value="Australia/Brisbane">Australia/Brisbane (AEST)</option>
+<option value="Australia/Sydney">Australia/Sydney (AEDT)</option>
+<option value="America/Montreal">America/Montreal (EST)</option>
+<option value="America/New_York">America/New_York (EST)</option>
+<option value="America/Los_Angeles">America/Los_Angeles (PST)</option>
+<option value="Europe/London">Europe/London (GMT)</option>
+<option value="Europe/Berlin">Europe/Berlin (CET)</option>
+<option value="Asia/Tokyo">Asia/Tokyo (JST)</option>
+<option value="Asia/Singapore">Asia/Singapore (SGT)</option>
+<option value="Asia/Shanghai">Asia/Shanghai (CST)</option>
+</select>
+</div>
+</div>
+</div>
+
 <div class="speaker-panel" id="speakerPanel">
 <h3>👥 Speaker Names</h3>
 <div id="speakerRows">
@@ -246,7 +294,10 @@ function saveAgentConfig() {
         name: document.getElementById('cfgAgentName').value,
         voice: document.getElementById('cfgVoice').value,
         tts_engine: document.getElementById('cfgEngine').value,
-        memory_dir: document.getElementById('cfgMemoryDir').value
+        memory_dir: document.getElementById('cfgMemoryDir').value,
+        llm_provider: document.getElementById('cfgLLMProvider').value,
+        llm_model: document.getElementById('cfgLLMModel').value || document.getElementById('cfgLLMModel').placeholder,
+        timezone: document.getElementById('cfgTimezone').value
     };
     if (refVal.trim()) config.tts_reference = refVal.trim();
     fetch('/api/agent-config', {
@@ -262,6 +313,76 @@ function onEngineChange() {
     document.getElementById('rowReference').style.display = engine === 'chatterbox' ? '' : 'none';
 }
 document.getElementById('cfgEngine').addEventListener('change', onEngineChange);
+
+// ===== SETTINGS PANEL =====
+function toggleSettings() {
+    const body = document.getElementById('settingsBody');
+    const arrow = document.getElementById('settingsArrow');
+    if (body.style.display === 'none') {
+        body.style.display = '';
+        arrow.textContent = '▼';
+    } else {
+        body.style.display = 'none';
+        arrow.textContent = '▶';
+    }
+}
+
+function onProviderChange() {
+    const provider = document.getElementById('cfgLLMProvider').value;
+    // Show API key for all except ollama
+    document.getElementById('rowAPIKey').style.display = provider === 'ollama' ? 'none' : '';
+    // Show ollama host:port only for ollama
+    document.getElementById('rowOllamaHost').style.display = provider === 'ollama' ? '' : 'none';
+    // Update model placeholder based on provider
+    const modelInput = document.getElementById('cfgLLMModel');
+    const placeholders = {
+        'ollama': 'deepseek-v4-flash:cloud',
+        'openai': 'gpt-4o',
+        'anthropic': 'claude-sonnet-4-6',
+        'tokenra': 'stealth/ox-alpha',
+        'openrouter': 'anthropic/claude-sonnet-4',
+    };
+    modelInput.placeholder = placeholders[provider] || '';
+    saveAgentConfig();
+}
+
+function saveAPIKey() {
+    // API key goes to a separate endpoint — stored in .env, not agent_config.json
+    const provider = document.getElementById('cfgLLMProvider').value;
+    const key = document.getElementById('cfgAPIKey').value;
+    fetch('/api/save-api-key', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({provider: provider, key: key})
+    }).then(r => r.json()).then(data => {
+        if (data.ok) {
+            document.getElementById('cfgAPIKey').value = '';
+            document.getElementById('cfgAPIKey').placeholder = 'Saved ✓';
+        }
+    }).catch(() => {});
+}
+
+function testLLM() {
+    const btn = document.getElementById('btnTestLLM');
+    const provider = document.getElementById('cfgLLMProvider').value;
+    const model = document.getElementById('cfgLLMModel').value || document.getElementById('cfgLLMModel').placeholder;
+    const apiKey = document.getElementById('cfgAPIKey').value;
+    const host = document.getElementById('cfgOllamaHost') ? document.getElementById('cfgOllamaHost').value : 'localhost';
+    const port = document.getElementById('cfgOllamaPort') ? document.getElementById('cfgOllamaPort').value : '11434';
+    btn.textContent = 'Testing...'; btn.style.color = 'var(--em-amber)';
+    fetch('/api/test-llm', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({provider: provider, model: model, api_key: apiKey, host: host, port: port})
+    }).then(r => r.json()).then(data => {
+        btn.textContent = data.ok ? '✓ OK' : '✗ Fail';
+        btn.style.color = data.ok ? 'var(--em-green)' : 'var(--em-red)';
+        setTimeout(() => { btn.textContent = 'Test'; btn.style.color = ''; }, 3000);
+    }).catch(() => {
+        btn.textContent = '✗ Fail'; btn.style.color = 'var(--em-red)';
+        setTimeout(() => { btn.textContent = 'Test'; btn.style.color = ''; }, 3000);
+    });
+}
 
 function prewarmEngine() {
     const engine = document.getElementById('cfgEngine').value;
@@ -363,6 +484,17 @@ async function update() {
             }
             if (typeof agentConfig.memory_dir === 'string' && document.activeElement !== document.getElementById('cfgMemoryDir')) {
                 document.getElementById('cfgMemoryDir').value = agentConfig.memory_dir || '';
+            }
+            // Settings panel sync
+            if (agentConfig.llm_provider && document.getElementById('cfgLLMProvider').value !== agentConfig.llm_provider) {
+                document.getElementById('cfgLLMProvider').value = agentConfig.llm_provider;
+                onProviderChange();
+            }
+            if (agentConfig.llm_model && document.activeElement !== document.getElementById('cfgLLMModel')) {
+                document.getElementById('cfgLLMModel').value = agentConfig.llm_model;
+            }
+            if (agentConfig.timezone && document.getElementById('cfgTimezone').value !== agentConfig.timezone) {
+                document.getElementById('cfgTimezone').value = agentConfig.timezone;
             }
         }
         if (document.getElementById('rowVoice')) onEngineChange();
