@@ -125,6 +125,31 @@ if exist "%PIPER_DIR%\piper.exe" (
 )
 
 REM ============================================================
+REM  5. VB-Audio Virtual Cable (CABLE-A)
+REM ============================================================
+echo.
+echo [5/5] Checking VB-Audio Virtual Cable...
+REM Check if CABLE-A is already installed (look for the driver)
+powershell -Command "Get-WmiObject Win32_SoundDevice | Select-Object Name" 2>nul | findstr /i "CABLE" >nul
+if not errorlevel 1 (
+    echo   VB-Cable already installed, skipping.
+) else (
+    echo   VB-Cable not found. Downloading...
+    set "VBC_URL=https://download.vb-audio.com/Download_CABLE/253/VBCABLE_Setup_x64.exe"
+    powershell -Command "try { Invoke-WebRequest -Uri '!VBC_URL!' -OutFile '%PARENT%\VBCABLE_Setup.exe' -ErrorAction Stop; echo 'Downloaded' } catch { echo 'Download failed - user can install manually' }"
+    if exist "%PARENT%\VBCABLE_Setup.exe" (
+        echo   Running VB-Cable installer (requires admin)... 
+        echo   NOTE: If prompted, click Install and wait for it to finish.
+        powershell -Command "Start-Process '%PARENT%\VBCABLE_Setup.exe' -Verb RunAs -Wait"
+        del "%PARENT%\VBCABLE_Setup.exe" 2>nul
+        echo [OK] VB-Cable installed
+    ) else (
+        echo   [WARN] Could not auto-download. Install manually from:
+        echo         https://vb-audio.com/Cable/
+    )
+)
+
+REM ============================================================
 REM  Done
 REM ============================================================
 echo.
