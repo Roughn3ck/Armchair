@@ -1,52 +1,50 @@
 @echo off
-REM start_armchair.bat — One-click launch for Agent In The Armchair
-REM Starts: audio capture + dashboard + pipeline + browser
-REM
-REM Usage: Double-click start_armchair.bat
-REM Stop:  Ctrl+C in the pipeline window (saves session on exit)
+REM ============================================================
+REM  Agent In The Armchair — Windows Launcher
+REM  Starts dashboard server + main pipeline, opens browser.
+REM  Press Ctrl+C to stop (session saves automatically).
+REM ============================================================
 
-echo ================================================
-echo AGENT IN THE ARMCHAIR — Starting
-echo ================================================
-echo.
+setlocal enabledelayedexpansion
 
-REM Use the real WSL (full path — avoids wsl.exe PATH conflict)
-set WSL=C:\Windows\System32\wsl.exe
+set "ROOT=%~dp0"
+set "PARENT=%ROOT%.."
+set "WHISPER_VENV=%PARENT%\venvs\whisper"
+set "WHISPER_PY=%WHISPER_VENV%\Scripts\python.exe"
 
-REM Step 1: Start audio capture in a new window
-echo [1/4] Starting audio capture...
-start "Armchair Audio Capture" cmd /k "cd /d B:\Github\Armchair && stream_to_file.bat"
-timeout /t 3 /nobreak >nul
+REM --- Check venvs exist ---
+if not exist "%WHISPER_PY%" (
+    echo [ERROR] Whisper venv not found. Run install.bat first.
+    pause
+    exit /b 1
+)
 
-REM Step 2: Start dashboard server in its own WSL window (stays alive)
-echo [2/4] Starting dashboard server...
-start "Armchair Dashboard" cmd /k %WSL% -e bash -c "python3 /mnt/b/Github/Armchair/dashboard_server.py"
-timeout /t 5 /nobreak >nul
+REM --- Check audio file (will be created by stream_to_file.bat) ---
+REM Start the audio capture in a separate window
+if exist "%ROOT%stream_to_file.bat" (
+    echo [INFO] Starting audio capture...
+    start "Armchair Audio" cmd /c "%ROOT%stream_to_file.bat"
+    timeout /t 3 /nobreak >nul
+)
 
-REM Step 3: Open browser (dashboard should be up by now)
-echo [3/4] Opening dashboard...
+REM --- Start dashboard server ---
+echo [INFO] Starting dashboard server on http://localhost:8765 ...
+start "Armchair Dashboard" "%WHISPER_PY%" "%ROOT%dashboard_server.py"
+
+REM --- Open browser ---
+timeout /t 1 /nobreak >nul
 start http://localhost:8765
-timeout /t 2 /nobreak >nul
 
-REM Step 4: Start pipeline in WSL (foreground — Ctrl+C to stop and save session)
-echo [4/4] Starting pipeline...
+REM --- Start main pipeline ---
+echo [INFO] Starting pipeline...
+echo [INFO] Press Ctrl+C to stop (session saves automatically)
 echo.
-echo ================================================
-echo Pipeline running. Press Ctrl+C to stop and save session.
-echo ================================================
-echo.
+"%WHISPER_PY%" "%ROOT%armchair_live.py" %*
 
-%WSL% -e bash -c "export $(grep HF_TOKEN /mnt/b/OpenClaw/.openclaw/.env) && /home/krisr/.local/share/whisper-venv/bin/python3 /mnt/b/Github/Armchair/armchair_live.py 2>&1 | tee /mnt/b/armchair_tmp/pipeline.log"
-
-REM After pipeline stops, clean up
+REM --- Cleanup on exit ---
 echo.
-echo ================================================
-echo Session saved. Cleaning up...
-echo ================================================
-REM Kill dashboard server
-%WSL% -e bash -c "pkill -f dashboard_server.py" 2>nul
-REM Close audio capture and dashboard windows
-taskkill /fi "WINDOWTITLE eq Armchair Audio Capture*" /f 2>nul
-taskkill /fi "WINDOWTITLE eq Armchair Dashboard*" /f 2>nul
-echo Done.
+echo [INFO] Pipeline stopped. Cleaning up...
+taskkill /fi "WINDOWTITLE eq Armchair Dashboard*" /f >nul 2>&1
+taskkill /fi "WINDOWTITLE eq Armchair Audio*" /f >nul 2>&1
+echo [INFO] Done.
 pause

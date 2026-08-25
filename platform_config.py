@@ -275,40 +275,53 @@ class LinuxPlatform(Platform):
 
 
 class WindowsPlatform(Platform):
-    """Windows-native (no WSL). Pure Windows paths."""
+    r"""Windows-native (no WSL). Pure Windows paths.
+
+    Expected layout:
+      C:\armchair\
+        Armchair\          <- repo (cloned)
+        venvs\              <- whisper, kokoro, chatterbox venvs
+        piper\              <- piper.exe + voice models
+        armchair_tmp\       <- session logs, TTS output
+    """
     name = "windows"
+
+    def __init__(self):
+        super().__init__()
+        # Parent of the repo dir = C:\armchair\
+        self._root = os.path.dirname(self.script_dir)
 
     @property
     def audio_input_path(self):
-        return os.environ.get('AUDIO_FILE', 'C:\\armchair\\armchair_audio.raw')
+        return os.environ.get('AUDIO_FILE', os.path.join(self._root, 'armchair_audio.raw'))
 
     @property
     def tmp_dir(self):
-        return os.path.join(os.environ.get('TEMP', 'C:\\armchair_tmp'), 'armchair_tts')
+        return os.path.join(os.environ.get('TEMP', self._root), 'armchair_tts')
 
     @property
     def tts_output_dir(self):
-        return os.environ.get('TTS_OUTPUT_DIR', 'C:\\armchair_tmp\\tts')
+        return os.path.join(self._root, 'armchair_tmp', 'tts')
 
     @property
     def session_log_dir(self):
-        return os.environ.get('SESSION_LOG_DIR', 'C:\\armchair_tmp\\session_logs')
+        return os.path.join(self._root, 'armchair_tmp', 'session_logs')
 
     @property
     def piper_bin(self):
-        return os.environ.get('PIPER_BIN', os.path.join(self.script_dir, 'piper.exe'))
+        return os.environ.get('PIPER_BIN', os.path.join(self._root, 'piper', 'piper.exe'))
 
     @property
     def piper_models_dir(self):
-        return os.environ.get('PIPER_MODELS_DIR', os.path.join(self.script_dir, 'voices'))
+        return os.environ.get('PIPER_MODELS_DIR', os.path.join(self._root, 'piper'))
 
     @property
     def chatterbox_python(self):
-        return os.environ.get('CHATTERBOX_PY', 'python')
+        return os.environ.get('CHATTERBOX_PY', os.path.join(self._root, 'venvs', 'chatterbox', 'Scripts', 'python.exe'))
 
     @property
     def kokoro_python(self):
-        return os.environ.get('KOKORO_PY', 'python')
+        return os.environ.get('KOKORO_PY', os.path.join(self._root, 'venvs', 'kokoro', 'Scripts', 'python.exe'))
 
     @property
     def whisper_cache_dir(self):
@@ -316,7 +329,8 @@ class WindowsPlatform(Platform):
 
     @property
     def whisper_venv_lib(self):
-        return None  # Windows uses system/venv paths directly
+        return None  # Windows uses venv site-packages directly, no LD_LIBRARY_PATH needed
 
     def create_audio_output(self):
-        return WindowsAudioOutput(os.environ.get('TTS_PLAYBACK_DIR', 'C:\\armchair_tmp'))
+        playback_dir = os.path.join(self._root, 'armchair_tmp')
+        return WindowsAudioOutput(playback_dir)
