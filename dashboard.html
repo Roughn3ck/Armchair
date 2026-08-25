@@ -3,57 +3,132 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Agent In The Armchair</title>
+<title>Agent In The Armchair — Executive Mind</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { background: #0a0a0a; color: #e0e0e0; font-family: 'Segoe UI', 'Helvetica Neue', sans-serif; padding: 20px; max-width: 1000px; margin: 0 auto; }
-.header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
-.header h1 { font-size: 22px; font-weight: 600; color: #fff; }
-.header .emoji { font-size: 28px; }
 
+/* ===== EM BRAND THEME ===== */
+:root {
+    --em-bg: #0a0a0a;
+    --em-panel: #111;
+    --em-panel-hover: #1a1a1a;
+    --em-border: #222;
+    --em-border-light: #333;
+    --em-text: #e0e0e0;
+    --em-text-dim: #888;
+    --em-text-faint: #555;
+    --em-cyan: #00ccff;
+    --em-cyan-dim: #0088aa;
+    --em-green: #00cc44;
+    --em-green-dark: #0a3d0a;
+    --em-red: #ff4444;
+    --em-red-dark: #3d0a0a;
+    --em-amber: #ffaa44;
+    --em-blue: #6ab0ff;
+}
+
+body {
+    background: var(--em-bg);
+    color: var(--em-text);
+    font-family: 'Segoe UI', 'Helvetica Neue', sans-serif;
+    padding: 20px;
+    max-width: 1000px;
+    margin: 0 auto;
+}
+
+/* ===== HEADER WITH BRAND ===== */
+.header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--em-border);
+}
+.header .emoji { font-size: 28px; }
+.header h1 { font-size: 22px; font-weight: 600; color: #fff; flex: 1; }
+.header .version {
+    font-size: 11px;
+    color: var(--em-cyan);
+    background: rgba(0,204,255,0.08);
+    border: 1px solid var(--em-cyan-dim);
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-weight: 600;
+    letter-spacing: 1px;
+}
+.header .brand-link {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    text-decoration: none;
+}
+.header .brand-link img {
+    width: 32px;
+    height: 32px;
+    border-radius: 4px;
+    border: 1px solid var(--em-border-light);
+}
+.header .brand-link .brand-text {
+    font-size: 11px;
+    color: var(--em-text-dim);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
+.header .brand-link:hover .brand-text { color: var(--em-cyan); }
+
+/* ===== TOP BAR ===== */
 .top-bar { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
 
-.mode-toggle { display: flex; gap: 0; border-radius: 6px; overflow: hidden; border: 1px solid #333; }
-.mode-btn { padding: 10px 20px; background: #111; color: #888; font-size: 14px; font-weight: 600; cursor: pointer; border: none; transition: all 0.2s; }
-.mode-btn:hover { background: #1a1a1a; }
-.mode-btn.active-listen { background: #0a3d0a; color: #00cc44; }
-.mode-btn.active-talk { background: #3d0a0a; color: #ff4444; }
+.mode-toggle { display: flex; gap: 0; border-radius: 6px; overflow: hidden; border: 1px solid var(--em-border-light); }
+.mode-btn { padding: 10px 20px; background: var(--em-panel); color: var(--em-text-dim); font-size: 14px; font-weight: 600; cursor: pointer; border: none; transition: all 0.2s; }
+.mode-btn:hover { background: var(--em-panel-hover); }
+.mode-btn.active-listen { background: var(--em-green-dark); color: var(--em-green); }
+.mode-btn.active-talk { background: var(--em-red-dark); color: var(--em-red); }
 
-.status-bar { display: flex; align-items: center; gap: 16px; padding: 8px 16px; background: #111; border: 1px solid #222; border-radius: 6px; flex: 1; min-width: 200px; }
+.status-bar { display: flex; align-items: center; gap: 16px; padding: 8px 16px; background: var(--em-panel); border: 1px solid var(--em-border); border-radius: 6px; flex: 1; min-width: 200px; }
 .status-dot { width: 10px; height: 10px; border-radius: 50%; background: #333; transition: all 0.3s; }
-.status-dot.live { background: #00cc44; box-shadow: 0 0 8px rgba(0,204,68,0.6); }
-.status-text { font-size: 13px; color: #888; }
+.status-dot.live { background: var(--em-green); box-shadow: 0 0 8px rgba(0,204,68,0.6); }
+.status-text { font-size: 13px; color: var(--em-text-dim); }
 .latency { font-size: 12px; color: #666; margin-left: auto; }
-.latency span { color: #00cc44; font-weight: 600; }
+.latency span { color: var(--em-green); font-weight: 600; }
 
-.config-panel { background: #111; border: 1px solid #222; border-radius: 6px; padding: 16px; margin-bottom: 16px; }
-.config-panel h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 2px; color: #555; margin-bottom: 12px; }
+/* ===== CONFIG PANEL ===== */
+.config-panel { background: var(--em-panel); border: 1px solid var(--em-border); border-radius: 6px; padding: 16px; margin-bottom: 16px; }
+.config-panel h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 2px; color: var(--em-text-faint); margin-bottom: 12px; }
 .config-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
-.config-row label { font-size: 13px; color: #888; min-width: 100px; }
-.config-row input, .config-row select { background: #0a0a0a; border: 1px solid #333; color: #e0e0e0; padding: 6px 10px; border-radius: 4px; font-size: 13px; flex: 1; }
-.config-row input:focus, .config-row select:focus { border-color: #00cc44; outline: none; }
-.save-btn { padding: 6px 14px; background: #0a3d0a; color: #00cc44; border: 1px solid #00cc44; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; }
+.config-row label { font-size: 13px; color: var(--em-text-dim); min-width: 100px; }
+.config-row input, .config-row select { background: var(--em-bg); border: 1px solid var(--em-border-light); color: var(--em-text); padding: 6px 10px; border-radius: 4px; font-size: 13px; flex: 1; }
+.config-row input:focus, .config-row select:focus { border-color: var(--em-green); outline: none; box-shadow: 0 0 0 1px rgba(0,204,68,0.15); }
+.save-btn { padding: 6px 14px; background: var(--em-green-dark); color: var(--em-green); border: 1px solid var(--em-green); border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; white-space: nowrap; transition: all 0.2s; }
 .save-btn:hover { background: #0a4d0a; }
 
-.speaker-panel { background: #111; border: 1px solid #222; border-radius: 6px; padding: 16px; margin-bottom: 16px; }
-.speaker-panel h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 2px; color: #555; margin-bottom: 12px; }
+/* ===== SPEAKER PANEL ===== */
+.speaker-panel { background: var(--em-panel); border: 1px solid var(--em-border); border-radius: 6px; padding: 16px; margin-bottom: 16px; }
+.speaker-panel h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 2px; color: var(--em-text-faint); margin-bottom: 12px; }
 .speaker-row { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
-.speaker-row label { font-size: 13px; color: #888; min-width: 100px; }
-.speaker-row input { background: #0a0a0a; border: 1px solid #333; color: #e0e0e0; padding: 6px 10px; border-radius: 4px; font-size: 13px; flex: 1; }
-.speaker-row input:focus { border-color: #00cc44; outline: none; }
+.speaker-row label { font-size: 13px; color: var(--em-text-dim); min-width: 100px; }
+.speaker-row input { background: var(--em-bg); border: 1px solid var(--em-border-light); color: var(--em-text); padding: 6px 10px; border-radius: 4px; font-size: 13px; flex: 1; }
+.speaker-row input:focus { border-color: var(--em-green); outline: none; }
 
-.section { margin-top: 12px; border: 1px solid #1a2a1a; border-radius: 6px; background: #0d140d; overflow: hidden; }
-.section-header { padding: 10px 16px; background: #111811; border-bottom: 1px solid #1a2a1a; display: flex; align-items: center; justify-content: space-between; }
-.section-header h2 { color: #00cc44; font-size: 12px; text-transform: uppercase; letter-spacing: 2px; font-weight: 600; }
-.copy-btn { background: none; border: 1px solid #333; color: #888; font-size: 11px; padding: 4px 10px; border-radius: 4px; cursor: pointer; transition: all 0.2s; }
-.copy-btn:hover { border-color: #00cc44; color: #00cc44; }
-#transcript { color: #c0d0c0; font-size: 14px; white-space: pre-wrap; max-height: 500px; overflow-y: auto; padding: 16px; line-height: 1.6; font-family: 'SF Mono', 'Consolas', monospace; }
-#transcript .timestamp { color: #00cc44; font-size: 12px; font-weight: 600; display: block; margin-top: 12px; margin-bottom: 4px; padding-bottom: 2px; border-bottom: 1px solid #1a2a1a; }
-#transcript .speaker { color: #6ab0ff; font-weight: 600; }
-#transcript .agent { color: #ffaa44; font-weight: 600; }
+/* ===== TRANSCRIPT SECTION ===== */
+.section { margin-top: 12px; border: 1px solid #1a2a2a; border-radius: 6px; background: #0d1418; overflow: hidden; }
+.section-header { padding: 10px 16px; background: #11181c; border-bottom: 1px solid #1a2a2a; display: flex; align-items: center; justify-content: space-between; }
+.section-header h2 { color: var(--em-cyan); font-size: 12px; text-transform: uppercase; letter-spacing: 2px; font-weight: 600; }
+.copy-btn { background: none; border: 1px solid var(--em-border-light); color: var(--em-text-dim); font-size: 11px; padding: 4px 10px; border-radius: 4px; cursor: pointer; transition: all 0.2s; }
+.copy-btn:hover { border-color: var(--em-cyan); color: var(--em-cyan); }
+#transcript { color: #c0d0d4; font-size: 14px; white-space: pre-wrap; max-height: 500px; overflow-y: auto; padding: 16px; line-height: 1.6; font-family: 'SF Mono', 'Consolas', monospace; }
+#transcript .timestamp { color: var(--em-cyan); font-size: 12px; font-weight: 600; display: block; margin-top: 12px; margin-bottom: 4px; padding-bottom: 2px; border-bottom: 1px solid #1a2a2a; }
+#transcript .speaker { color: var(--em-blue); font-weight: 600; }
+#transcript .agent { color: var(--em-amber); font-weight: 600; }
 .new-line { animation: highlight 1s ease-out; }
-@keyframes highlight { 0% { background-color: rgba(0,204,68,0.15); } 100% { background-color: transparent; } }
-.footer { margin-top: 16px; font-size: 11px; color: #444; text-align: center; }
+@keyframes highlight { 0% { background-color: rgba(0,204,255,0.12); } 100% { background-color: transparent; } }
+
+/* ===== FOOTER ===== */
+.footer { margin-top: 16px; font-size: 11px; color: var(--em-text-faint); text-align: center; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.footer .brand-row { display: flex; align-items: center; gap: 6px; }
+.footer .brand-row a { color: var(--em-cyan-dim); text-decoration: none; }
+.footer .brand-row a:hover { color: var(--em-cyan); }
 </style>
 </head>
 <body>
@@ -61,6 +136,11 @@ body { background: #0a0a0a; color: #e0e0e0; font-family: 'Segoe UI', 'Helvetica 
 <div class="header">
 <span class="emoji">🪑</span>
 <h1>Agent In The Armchair</h1>
+<span class="version">v2.2</span>
+<a href="https://executivemind.io" target="_blank" class="brand-link">
+<img src="dashboard/assets/em-logo-grunge-dark.jpg" alt="Executive Mind">
+<span class="brand-text">Executive Mind</span>
+</a>
 </div>
 
 <div class="top-bar">
@@ -131,7 +211,12 @@ body { background: #0a0a0a; color: #e0e0e0; font-family: 'Segoe UI', 'Helvetica 
 </div>
 
 <div class="footer">
-Agent In The Armchair — VTT + AI Agent • Whisper (CUDA) • pyannote-audio • TTS: Piper / Kokoro / Chatterbox • Invisible to Teams
+<div>Agent In The Armchair — VTT + AI Agent • Whisper (CUDA) • pyannote-audio • TTS: Piper / Kokoro / Chatterbox</div>
+<div class="brand-row">
+<span>Built by</span>
+<a href="https://executivemind.io" target="_blank">Executive Mind</a>
+<span>🌊</span>
+</div>
 </div>
 
 <script>
@@ -163,7 +248,6 @@ function saveAgentConfig() {
         tts_engine: document.getElementById('cfgEngine').value,
         memory_dir: document.getElementById('cfgMemoryDir').value
     };
-    // Only send reference when non-empty — don't clobber a configured default
     if (refVal.trim()) config.tts_reference = refVal.trim();
     fetch('/api/agent-config', {
         method: 'POST',
@@ -198,8 +282,6 @@ function saveSpeakerName(speakerId, name) {
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({names: knownSpeakers})
     }).catch(() => {});
-    // Update transcript display to show names retroactively
-    // (without rebuilding speaker rows)
     const transcriptEl = document.getElementById('transcript');
     if (lastTranscript) {
         const agentName = agentConfig.name || 'Agricola';
@@ -227,7 +309,6 @@ function updateSpeakerRows() {
     const speakerIds = Object.keys(knownSpeakers).sort();
 
     if (speakerIds.length === 0) {
-        // Only show placeholder if there are truly no speakers
         if (!container.dataset.placeholder) {
             container.innerHTML = '<div style="color: #555; font-size: 13px;">Speakers will appear here once detected...</div>';
             container.dataset.placeholder = 'true';
@@ -235,14 +316,11 @@ function updateSpeakerRows() {
         return;
     }
 
-    // Remove placeholder if it exists
     if (container.dataset.placeholder) {
         container.innerHTML = '';
         delete container.dataset.placeholder;
     }
 
-    // Only ADD rows for new speakers — don't rebuild existing ones
-    // This prevents input fields from losing focus during refresh
     for (const id of speakerIds) {
         if (!document.getElementById('speaker-row-' + id)) {
             const name = knownSpeakers[id] || '';
@@ -253,8 +331,6 @@ function updateSpeakerRows() {
             container.appendChild(div);
         }
     }
-
-    // Remove rows for speakers no longer detected (optional, can skip)
 }
 
 async function update() {
@@ -262,17 +338,14 @@ async function update() {
         const r = await fetch('/api/status');
         const data = await r.json();
 
-        // Latency
         if (data.latency) {
             document.getElementById('latency').innerHTML = `Process: <span>${data.latency}</span>`;
         }
 
-        // Mode sync
         if (data.mode && data.mode !== currentMode) {
             setMode(data.mode);
         }
 
-        // Agent config sync
         if (data.agent_config) {
             agentConfig = data.agent_config;
             if (agentConfig.name && document.getElementById('cfgAgentName').value !== agentConfig.name) {
@@ -292,43 +365,34 @@ async function update() {
                 document.getElementById('cfgMemoryDir').value = agentConfig.memory_dir || '';
             }
         }
-        // Ensure correct visibility on first load
         if (document.getElementById('rowVoice')) onEngineChange();
 
-        // Speaker names — merge detected speakers with user-entered names
         if (data.detected_speakers) {
-            // Initialize knownSpeakers for any newly detected speakers
             for (const spk of data.detected_speakers) {
                 if (!(spk in knownSpeakers)) {
                     knownSpeakers[spk] = '';
                 }
             }
-            // Remove speakers no longer detected (optional — keep for safety)
             updateSpeakerRows();
         }
         if (data.speaker_names) {
-            // Merge user-entered names (from API) over our local state
             for (const [k, v] of Object.entries(data.speaker_names)) {
                 knownSpeakers[k] = v;
             }
             updateSpeakerRows();
         }
 
-        // Transcript
         if (data.transcript && data.transcript !== lastTranscript) {
             const isNew = lastTranscript !== '';
             lastTranscript = data.transcript;
 
-            // Parse and format
             const lines = data.transcript.split('\n');
             const agentName = agentConfig.name || 'Agricola';
             const formatted = lines.map(line => {
-                // Minute separator
                 let match = line.match(/^--- (\d{2}:\d{2}) ---$/);
                 if (match) {
                     return `<span class="timestamp">${match[1]}</span>`;
                 }
-                // Speaker line: "SPEAKER_00: text" or "Agricola: text"
                 match = line.match(/^(\S+?): (.*)$/);
                 if (match) {
                     const speaker = match[1];
@@ -367,7 +431,7 @@ function copyTranscript() {
         const btn = document.querySelector('.copy-btn');
         const original = btn.textContent;
         btn.textContent = 'Copied!';
-        btn.style.color = '#00cc44';
+        btn.style.color = 'var(--em-cyan)';
         setTimeout(() => { btn.textContent = original; btn.style.color = ''; }, 1500);
     });
 }

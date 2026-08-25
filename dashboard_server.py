@@ -13,6 +13,9 @@ SPEAKER_NAMES_FILE = '/tmp/armchair/speaker_names.json'
 DETECTED_SPEAKERS_FILE = '/tmp/armchair/detected_speakers.json'
 AGENT_CONFIG_FILE = '/tmp/armchair/agent_config.json'
 
+# Serve static files (dashboard assets) from the script directory
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 
 class ArmchairHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -79,8 +82,22 @@ class ArmchairHandler(http.server.SimpleHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-Type', 'text/html')
             self.end_headers()
-            with open(os.path.join(os.path.dirname(__file__), 'dashboard.html'), 'rb') as f:
+            with open(os.path.join(_SCRIPT_DIR, 'dashboard.html'), 'rb') as f:
                 self.wfile.write(f.read())
+        elif self.path.startswith('/dashboard/assets/'):
+            # Serve branded assets (logo, etc.) from dashboard/assets/
+            asset_path = os.path.join(_SCRIPT_DIR, self.path.lstrip('/'))
+            if os.path.isfile(asset_path):
+                ext = os.path.splitext(asset_path)[1].lower()
+                ctype = {'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png',
+                         'gif': 'image/gif', 'webp': 'image/webp', 'svg': 'image/svg+xml'}.get(ext.lstrip('.'), 'application/octet-stream')
+                self.send_response(200)
+                self.send_header('Content-Type', ctype)
+                self.end_headers()
+                with open(asset_path, 'rb') as f:
+                    self.wfile.write(f.read())
+            else:
+                self.send_error(404)
         else:
             super().do_GET()
 
