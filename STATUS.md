@@ -1,21 +1,33 @@
 # STATUS — Agent In The Armchair
 
-## Current Version: v2 (streaming) — WORKING
+## Current Version: v2.1 (multi-engine TTS) — WORKING
 
 ## Build Status
 
 | Component | Status | Notes |
 |-----------|--------|-------|
 | **Streaming VTT** | ✅ Working | Silero VAD + faster-whisper streaming (word timestamps) |
-| **Speaker Diarization** | ✅ Working | pyannote-audio on 16s rolling buffer, per-segment matching |
+| **Speaker Diarization** | ⚠️ Weak | pyannote works but recognition quality poor — enrollment planned for v2.2 |
 | **Talk/Listen Mode** | ✅ Working | LLM gate (deepseek-v4-flash), [SILENCE] for mentions |
-| **Piper TTS** | ✅ Working | Alan (British RP), ~1s generation, plays to meeting via CABLE-A |
-| **Dashboard** | ✅ Working | Speaker naming with Label button, agent config, mode toggle |
+| **Piper TTS** | ✅ Working | Alan default, ~1s generation, instant voice swaps |
+| **Kokoro TTS** | ✅ Working | ~1.6s warm gen, persistent worker in own venv (CUDA) |
+| **Chatterbox TTS** | ✅ Working | Voice cloning from ref WAV (Muska), ~2.4s warm / ~8s cold |
+| **Mid-call engine/voice hot-swap** | ✅ Working | (engine, voice, ref) signature checked between responses |
+| **⚡Activate pre-warm** | ✅ Working | Dashboard button loads engine in background via watcher thread |
+| **Worker pool** | ✅ Working | Engines stay loaded; switch-back is instant |
+| **Memory directory** | ✅ Working | Custom folder of .md/.txt loaded into system prompt; Windows paths auto-normalized |
+| **Dashboard** | ✅ Working | Speaker naming, agent config, engine select + Activate, mode toggle |
 | **Session Management** | ✅ Working | Timestamped folders, clean start/stop, archives transcript + audio |
-| **One-Click Launcher** | ✅ Working | start_armchair.bat — starts everything, Ctrl+C saves and cleans |
-| **Mic Capture** | ✅ Working | ffmpeg amix mixes meeting audio + Jabra Panacast mic |
-| **Voices Folder** | ✅ In repo | 8 sample WAVs (3 British, 5 American) with README |
-| **requirements.txt** | ✅ Created | For external installation |
+| **One-Click Launcher** | ✅ Working | start_armchair.bat |
+| **Mic Capture** | ✅ Working | ffmpeg amix (meeting audio + Jabra Panacast) |
+
+## Verified Live (2026-08-25)
+
+- Full call test with Chatterbox/Muska voice cloning — clear, perfect clone from 22s reference WAV
+- Agent loaded with Muska's real workspace memory (`/mnt/b/OpenClaw/.openclaw/workspace`) at call time
+- Voicemeeter Banana routing verified end-to-end (Jabra → B1 mix, CABLE-A capture)
+- Kokoro worker: 6.3s load, 1.6s warm generation
+- Chatterbox worker: 6.9s load, 8.5s cold gen, 2.4s warm generation
 
 ## Verified Live (2026-08-24)
 
@@ -78,12 +90,15 @@
 - Returns [SILENCE] for mentions, response for direct address
 - Agent name configurable in dashboard
 
-### TTS
-- `Speaker` — Piper TTS
-- Voice: en_GB-alan-medium (British RP)
-- Piper generates WAV → copy to /mnt/b/ → PowerShell PlaySync → CABLE-A → meeting
-- ~1s generation on CPU
-- Speed adjustable via --length-scale
+### TTS — Multi-Engine
+- `Speaker` dispatches to piper | kokoro | chatterbox via `tts_engine` config
+- Kokoro/chatterbox run as persistent `EngineWorker` subprocesses in isolated venvs
+  - JSON-over-stdin protocol; tolerates non-JSON noise on stdout
+  - Global `_WORKER_POOL` keeps engines loaded across hot-swaps
+- Hot-swap: main loop re-reads agent config after each response; rebuilds Speaker when (engine, voice, ref) changes
+- Prewarm: dashboard ⚡Activate → `/tmp/armchair/tts_prewarm.txt` → watcher thread starts worker in background
+- Generation writes to `/tmp/armchair_tts/` (native ext4 — drvfs write races), then single copy to `B:\` for PowerShell PlaySync
+- Piper speed: --length-scale 0.8
 
 ### Dashboard
 - `dashboard_server.py` — HTTP server on :8765
@@ -112,7 +127,8 @@ Agricola TTS → PowerShell PlaySync → CABLE-A Input → CABLE-A Output → me
 - **Whisper model:** large-v3-turbo (CUDA)
 - **VAD:** Silero VAD (via torch.hub)
 - **Diarization:** pyannote-audio 4.0.7 (CUDA, cuDNN disabled)
-- **TTS:** Piper (`/home/krisr/.local/bin/piper`)
+- **TTS:** Piper (`/home/krisr/.local/bin/piper`); Kokoro (`~/.local/share/kokoro-venv`); Chatterbox (`~/.local/share/chatterbox-venv`)
+- **Voice refs:** `/home/krisr/.local/share/chatterbox/*.wav`
 - **LLM:** Ollama deepseek-v4-flash:cloud
 - **HF Token:** stored in `/mnt/b/OpenClaw/.openclaw/.env`
 - **Piper voices:** `/home/krisr/.local/share/piper/`
@@ -126,10 +142,11 @@ Agricola TTS → PowerShell PlaySync → CABLE-A Input → CABLE-A Output → me
 
 ## Known Issues
 
-1. **TTS echo** — Agricola's TTS voice gets picked up by the mic capture (CABLE-A loop). Need echo suppression like Cochran.
-2. **LLM latency** — ~1-2s for deepseek-v4-flash. Could be faster with a smaller model.
-3. **Diarization on short utterances** — rapid speaker switches (gym interviews) are hard. Real meetings are easier.
-4. **GPU load** — Whisper + pyannote both on CUDA. VAD helps but Talk mode adds LLM + TTS.
+1. **Speaker recognition weak** — generic clustering mislabels/mixes speakers. Plan (v2.2): pyannote speaker enrollment (embed reference samples per person, match per utterance), larger rolling buffer (16→24s), per-utterance re-check.
+2. **TTS echo** — agent's TTS picked up by mic capture (CABLE-A loop). Name-gate mostly handles it; echo suppression still needed.
+3. **LLM latency** — ~1-2s for deepseek-v4-flash. Could be faster with a smaller model.
+4. **Diarization on short utterances** — rapid speaker switches are hard. Real meetings are easier.
+5. **GPU load** — Whisper + pyannote + parked TTS workers all share CUDA. Monitor VRAM when both engines activated.
 
 ## Git
 - Repo: https://github.com/Roughn3ck/Armchair

@@ -8,6 +8,7 @@ import time
 TRANSCRIPT = '/tmp/armchair/transcript.txt'
 LATENCY_FILE = '/tmp/armchair/latency.txt'
 MODE_FILE = '/tmp/armchair/mode.txt'
+PREWARM_FILE = '/tmp/armchair/tts_prewarm.txt'
 SPEAKER_NAMES_FILE = '/tmp/armchair/speaker_names.json'
 DETECTED_SPEAKERS_FILE = '/tmp/armchair/detected_speakers.json'
 AGENT_CONFIG_FILE = '/tmp/armchair/agent_config.json'
@@ -123,6 +124,21 @@ class ArmchairHandler(http.server.SimpleHTTPRequestHandler):
                     json.dump(existing, f)
                 print(f'[DASHBOARD] Agent config updated: {data}')
                 self._send_json({'status': 'ok', 'config': existing})
+            except Exception as e:
+                self._send_json({'error': str(e)}, 500)
+
+        elif self.path == '/api/tts-prewarm':
+            body = self._read_body()
+            try:
+                data = json.loads(body)
+                engine = data.get('engine', '')
+                if engine in ('piper', 'kokoro', 'chatterbox'):
+                    with open(PREWARM_FILE, 'w') as f:
+                        f.write(engine)
+                    print(f'[DASHBOARD] TTS prewarm requested: {engine}')
+                    self._send_json({'status': 'ok', 'prewarming': engine})
+                else:
+                    self._send_json({'error': 'unknown engine'}, 400)
             except Exception as e:
                 self._send_json({'error': str(e)}, 500)
 

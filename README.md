@@ -31,7 +31,7 @@ Dashboard (http://localhost:8765) with live labeled transcript
        ↓
 LLM gate (Ollama): "Am I being directly addressed?"
        ↓
-Yes → Piper TTS (British RP voice) → WAV → PowerShell → CABLE-A → meeting hears agent
+Yes → TTS engine (Piper / Kokoro / Chatterbox voice cloning) → WAV → PowerShell → CABLE-A → meeting hears agent
 No  → [SILENCE] — agent stays quiet
 ```
 
@@ -42,7 +42,7 @@ No  → [SILENCE] — agent stays quiet
 - **VAD-driven, not time-driven.** Silero VAD detects speech, only sends speech to Whisper. Silence is skipped.
 - **Per-segment speaker matching.** Whisper word timestamps matched to pyannote speaker segments. Handles mid-utterance speaker switches.
 - **LLM gate for direct address.** The LLM decides if it's being addressed vs mentioned. No keyword matching.
-- **Piper TTS, not Kokoro.** 12x faster (1s vs 12s). Standard voices. Alan (British RP) is the default.
+- **Three TTS engines, swappable mid-call.** Piper (fast, ~1s, built-in voices), Kokoro (premium quality, ~1.6s), Chatterbox (zero-shot voice cloning from a reference WAV — the agent can speak in *any* voice you give it). Engines run as persistent workers in isolated venvs; a dashboard ⚡Activate button pre-warms an engine so switching is instant. Worker pool keeps used engines loaded — switch back with zero latency.
 - **Session management.** Each session archived to its own folder with transcript, audio, and speaker data.
 
 ## What's Here
@@ -51,7 +51,8 @@ No  → [SILENCE] — agent stays quiet
 |------|---------|
 | `armchair_live.py` | Main streaming pipeline (VTT + diarization + LLM + TTS) |
 | `dashboard_server.py` | HTTP server for live dashboard + API |
-| `dashboard.html` | Web dashboard with speaker naming, agent config, mode toggle |
+| `dashboard.html` | Web dashboard with speaker naming, agent config, TTS engine select, mode toggle |
+| `tts_workers/` | Persistent TTS engine workers (kokoro, chatterbox) — isolated venvs, JSON-over-stdin |
 | `stream_to_file.bat` | Windows ffmpeg audio capture (meeting audio + mic) |
 | `start_armchair.bat` | One-click launcher (audio + dashboard + pipeline + browser) |
 | `setup_audio.bat` | Audio routing setup guide |
@@ -79,10 +80,18 @@ No  → [SILENCE] — agent stays quiet
 - LLM decides: direct address vs mention (returns [SILENCE] for mentions)
 - Agent name configurable in dashboard
 
-### TTS (Piper)
-- British RP voice (Alan) — fast, ~1s generation
-- Configurable speed (--length-scale)
-- Voice selectable from dashboard dropdown
+### TTS — Three Engines
+- **Piper** — built-in voices (Alan default), ~1s generation, instant voice swaps
+- **Kokoro** — premium quality voices (~1.6s warm), own venv (`~/.local/share/kokoro-venv`)
+- **Chatterbox** — zero-shot voice cloning from a reference WAV (e.g. Muska's voice), own venv (`~/.local/share/chatterbox-venv`), ~2.4s warm
+- Engine selectable from dashboard; ⚡Activate button pre-warms an engine in the background
+- Worker pool keeps engines loaded — switching back to a used engine is instant
+- Hot-swap mid-call: engine, Piper voice, and reference WAV all switch on the next utterance
+
+### Agent Memory
+- Custom memory directory field on dashboard — any folder of .md/.txt files loaded into the system prompt at startup
+- Windows-style paths (`B:\...`) auto-normalized to WSL (`/mnt/b/...`)
+- Point it at an agent's workspace and it calls with that agent's brain, not just its voice
 
 ### Session Management
 - Each session creates `B:\armchair_tmp\session_logs\YYYY-MM-DD_HHMMSS\`

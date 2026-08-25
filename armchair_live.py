@@ -73,10 +73,18 @@ LLM_API_PATH = "/api/chat"
 LLM_MAX_TOKENS = 150
 LLM_TEMPERATURE = 0.7
 
-# TTS config (Piper)
+# TTS config (engines)
 TTS_VOICE_DEFAULT = "en_GB-alan-medium"
+TTS_ENGINE_DEFAULT = "piper"  # piper | kokoro | chatterbox
 PIPER_BIN = "/home/krisr/.local/bin/piper"
 PIPER_MODELS_DIR = "/home/krisr/.local/share/piper"
+CHATTERBOX_WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tts_workers", "chatterbox_worker.py")
+CHATTERBOX_PY = "/home/krisr/.local/share/chatterbox-venv/bin/python"
+KOKORO_WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tts_workers", "kokoro_worker.py")
+KOKORO_PY = "/home/krisr/.local/share/kokoro-venv/bin/python"
+# Hard-wired for now — Muska voice reference (break out to config later)
+CHATTERBOX_REF_DEFAULT = "/home/krisr/.local/share/chatterbox/muska-reference.wav"
+KOKORO_VOICE_DEFAULT = "af_heart"
 TTS_OUTPUT_DIR = "/mnt/b/armchair_tmp/tts"
 
 # Agent defaults
@@ -97,6 +105,7 @@ AGENT_PERSONA_DEFAULT = (
 TRANSCRIPT_FILE = "/tmp/armchair/transcript.txt"
 LATENCY_FILE = "/tmp/armchair/latency.txt"
 MODE_FILE = "/tmp/armchair/mode.txt"
+PREWARM_FILE = "/tmp/armchair/tts_prewarm.txt"
 SPEAKER_NAMES_FILE = "/tmp/armchair/speaker_names.json"
 DETECTED_SPEAKERS_FILE = "/tmp/armchair/detected_speakers.json"
 AGENT_CONFIG_FILE = "/tmp/armchair/agent_config.json"
@@ -171,6 +180,9 @@ def get_agent_config():
         'voice': TTS_VOICE_DEFAULT,
         'llm_model': LLM_MODEL_DEFAULT,
         'persona': AGENT_PERSONA_DEFAULT,
+        'tts_engine': TTS_ENGINE_DEFAULT,
+        'tts_reference': CHATTERBOX_REF_DEFAULT,
+        'memory_dir': '',
     })
 
 
@@ -390,21 +402,25 @@ class StreamingTranscriber:
             return []
 
         try:
-            segments, _ = self.model.transcribe(
-                self.audio_buffer, beam_size=5, language='en',
-                vad_filter=False,
-                condition_on_previous_text=False,
-                word_timestamps=True
-            )
-
-            result = []
-            for seg in segments:
-                result.append({
-                    'start': seg.start,
-                    'end': seg.end,
-                    'text': seg.text.strip()
-                })
-
+            import warnings
+            with warnings.catch_warnings():
+                # faster-whisper emits harmless "Mean of empty slice" warnings on
+                # sub-second VAD blips — silence them
+                warnings.simplefilter("ignore", RuntimeWarning)
+                with np.errstate(all="ignore"):
+                    segments, _ = self.model.transcribe(
+                        self.audio_buffer, beam_size=5, language='en',
+                        vad_filter=False,
+                        condition_on_previous_text=False,
+                        word_timestamps=True
+                    )
+                    result = []
+                    for seg in segments:
+                        result.append({
+                            'start': seg.start,
+                            'end': seg.end,
+                            'text': seg.text.strip()
+                        })
             return result
 
         except Exception as e:
@@ -620,22 +636,133 @@ class Thinker:
 
 
 # ============================================================
-# TTS SPEAKER (Piper)
+# TTS SPEAKER (multi-engine: piper | kokoro | chatterbox)
 # ============================================================
+# Global worker pool — keeps engines loaded across Speaker rebuilds.
+# Swapping voices/engines reuses warm workers instead of killing them.
+_WORKER_POOL = {}
+
+def get_worker(engine):
+    """Get or lazily create the persistent worker for an engine."""
+    if engine not in _WORKER_POOL:
+        if engine == "kokoro":
+            _WORKER_POOL[engine] = EngineWorker("kokoro", KOKORO_PY, KOKORO_WORKER)
+        elif engine == "chatterbox":
+            _WORKER_POOL[engine] = EngineWorker("chatterbox", CHATTERBOX_PY, CHATTERBOX_WORKER)
+        else:
+            return None
+    return _WORKER_POOL[engine]
+
+
+class EngineWorker:
+    """Persistent worker subprocess (kokoro / chatterbox venv).
+    JSON-over-stdin protocol. Model loads once, reused per utterance.
+    """
+    def __init__(self, name, py_bin, worker_script):
+        self.name = name
+        self.py_bin = py_bin
+        self.worker_script = worker_script
+        self.proc = None
+        self.lock = threading.Lock()
+
+    def _start(self):
+        log("TTS", f"Starting {self.name} worker ({self.py_bin})...")
+        self.proc = subprocess.Popen(
+            [self.py_bin, self.worker_script],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True, bufsize=1
+        )
+        # Wait for ready event
+        while True:
+            line = self.proc.stdout.readline()
+            if not line:
+                raise RuntimeError(f"{self.name} worker died during startup")
+            try:
+                evt = json.loads(line.strip())
+                if evt.get("event") in ("loaded", "ready"):
+                    break
+            except json.JSONDecodeError:
+                continue
+        log("TTS", f"{self.name} worker ready")
+
+    def generate(self, text, out_path, ref=None):
+        with self.lock:
+            for attempt in range(2):
+                try:
+                    if self.proc is None or self.proc.poll() is not None:
+                        self._start()
+                    req = {"text": text, "out": out_path}
+                    if ref:
+                        req["ref"] = ref
+                    self.proc.stdin.write(json.dumps(req) + "\n")
+                    self.proc.stdin.flush()
+                    resp = None
+                    while resp is None:
+                        resp_line = self.proc.stdout.readline()
+                        if not resp_line:
+                            raise RuntimeError("worker closed stdout")
+                        try:
+                            resp = json.loads(resp_line.strip())
+                        except json.JSONDecodeError:
+                            log("TTS", f"{self.name} non-JSON stdout: {resp_line.strip()[:120]}")
+                    if resp.get("ok"):
+                        return True
+                    raise RuntimeError(resp.get("error", "unknown worker error"))
+                except Exception as e:
+                    log("TTS", f"{self.name} attempt {attempt+1} failed: {e}")
+                    try:
+                        if self.proc:
+                            self.proc.kill()
+                    except Exception:
+                        pass
+                    self.proc = None
+            return False
+
+    def stop(self):
+        try:
+            if self.proc and self.proc.poll() is None:
+                self.proc.stdin.close()
+                self.proc.wait(timeout=5)
+        except Exception:
+            try:
+                if self.proc:
+                    self.proc.kill()
+            except Exception:
+                pass
+        self.proc = None
+
+
 class Speaker:
-    def __init__(self, voice_model):
+    """TTS speaker — dispatches to piper | kokoro | chatterbox.
+    All engines produce a WAV in TTS_OUTPUT_DIR; playback path is shared.
+    """
+    def __init__(self, voice_model, engine="piper", tts_reference=None):
+        self.engine = engine
         self.voice_model = voice_model
-        self.voice_path = os.path.join(PIPER_MODELS_DIR, f"{voice_model}.onnx")
-        self.config_path = os.path.join(PIPER_MODELS_DIR, f"{voice_model}.onnx.json")
+        self.tts_reference = tts_reference or CHATTERBOX_REF_DEFAULT
         self.speaking = False
         os.makedirs(TTS_OUTPUT_DIR, exist_ok=True)
         os.makedirs(TTS_PLAYBACK_DIR, exist_ok=True)
 
-        if not os.path.exists(self.voice_path):
-            log("TTS", f"WARNING: Voice not found: {self.voice_path}")
-            self.voice_path = None
+        self.worker = None  # lazily created for kokoro/chatterbox
+
+        if engine == "piper":
+            self.voice_path = os.path.join(PIPER_MODELS_DIR, f"{voice_model}.onnx")
+            self.config_path = os.path.join(PIPER_MODELS_DIR, f"{voice_model}.onnx.json")
+            if not os.path.exists(self.voice_path):
+                log("TTS", f"WARNING: Voice not found: {self.voice_path}")
+                self.voice_path = None
+            else:
+                log("TTS", f"Engine: piper, voice: {voice_model}")
+        elif engine == "kokoro":
+            log("TTS", f"Engine: kokoro, voice: {KOKORO_VOICE_DEFAULT}")
+        elif engine == "chatterbox":
+            if not os.path.exists(self.tts_reference):
+                log("TTS", f"WARNING: Reference wav not found: {self.tts_reference}")
+            else:
+                log("TTS", f"Engine: chatterbox, reference: {self.tts_reference}")
         else:
-            log("TTS", f"Voice: {voice_model}")
+            raise ValueError(f"Unknown TTS engine: {engine}")
 
     def speak_and_release(self, text, agent_name):
         try:
@@ -643,40 +770,59 @@ class Speaker:
         finally:
             self.speaking = False
 
+    def _generate_piper(self, text, wav_path):
+        result = subprocess.run(
+            [PIPER_BIN, "-m", self.voice_path, "-c", self.config_path,
+             "--length-scale", "0.8",
+             "-f", wav_path],
+            input=text, capture_output=True, text=True, timeout=15
+        )
+        if result.returncode != 0:
+            log("TTS", f"Piper error (rc={result.returncode}): {result.stderr[:200]}")
+        return os.path.exists(wav_path)
+
     def speak(self, text, agent_name):
-        if not text or len(text) < 3 or not self.voice_path:
-            log("TTS", f"Skipping: text={len(text) if text else 0} chars, voice={self.voice_path is not None}")
+        if not text or len(text) < 3:
+            return
+        if self.engine == "piper" and not self.voice_path:
+            log("TTS", "Skipping: no piper voice loaded")
             return
 
         timestamp = int(time.time() * 1000)
-        wav_path = f"{TTS_OUTPUT_DIR}/agent_{timestamp}.wav"
-        # WSL path for copying, Windows path for PowerShell
+        # Generate on native WSL fs (/tmp) — reliable & fast; only playback copies over drvfs
+        os.makedirs("/tmp/armchair_tts", exist_ok=True)
+        wav_path = f"/tmp/armchair_tts/agent_{timestamp}.wav"
         wsl_playback = f"{TTS_PLAYBACK_DIR}/agent_{timestamp}.wav"
         win_playback = f"B:\\armchair_tmp\\agent_{timestamp}.wav"
 
-        log("TTS", f"Generating: piper={PIPER_BIN}, voice={self.voice_path}")
-        log("TTS", f"Text: {text[:100]}")
+        log("TTS", f"Generating ({self.engine}): {text[:100]}")
 
         try:
-            result = subprocess.run(
-                [PIPER_BIN, "-m", self.voice_path, "-c", self.config_path,
-                 "--length-scale", "0.8",
-                 "-f", wav_path],
-                input=text, capture_output=True, text=True, timeout=15
-            )
+            if self.engine == "piper":
+                if not self._generate_piper(text, wav_path):
+                    log("TTS", "Failed to generate audio (piper)")
+                    return
+            elif self.engine == "kokoro":
+                if not get_worker("kokoro").generate(text, wav_path):
+                    log("TTS", "Failed to generate audio (kokoro)")
+                    return
+            elif self.engine == "chatterbox":
+                if not get_worker("chatterbox").generate(text, wav_path, ref=self.tts_reference):
+                    log("TTS", "Failed to generate audio (chatterbox)")
+                    return
 
-            if result.returncode != 0:
-                log("TTS", f"Piper error (rc={result.returncode}): {result.stderr[:200]}")
+            # Worker confirms ok only AFTER closing the file — but cold-start
+            # writes can lag; give it up to 15s to become visible
+            for _ in range(150):
+                if os.path.exists(wav_path) and os.path.getsize(wav_path) > 0:
+                    break
+                time.sleep(0.1)
+            else:
+                # Worker said ok — trust it and attempt the copy anyway
+                log("TTS", f"WAV slow to appear, trying copy anyway: {wav_path}")
 
-            if not os.path.exists(wav_path):
-                log("TTS", f"Failed to generate audio: {wav_path}")
-                log("TTS", f"Piper stdout: {result.stdout[:200]}")
-                log("TTS", f"Piper stderr: {result.stderr[:200]}")
-                return
-
-            # Copy to Windows-accessible path using WSL path
+            # Shared playback path (Windows-side PowerShell PlaySync)
             shutil.copy2(wav_path, wsl_playback)
-
             if not os.path.exists(wsl_playback):
                 log("TTS", f"ERROR: WAV not copied to {wsl_playback}")
                 return
@@ -691,8 +837,6 @@ class Speaker:
             result = subprocess.run(play_cmd, capture_output=True, text=True, timeout=30)
             if result.returncode != 0:
                 log("TTS", f"PlaySync error: {result.stderr[:200]}")
-            if result.stdout:
-                log("TTS", f"PlaySync output: {result.stdout[:200]}")
 
         except subprocess.TimeoutExpired:
             log("TTS", "Timeout")
@@ -743,9 +887,22 @@ def main():
     voice_model = agent_config['voice']
     llm_model = agent_config.get('llm_model', LLM_MODEL_DEFAULT)
     persona = agent_config.get('persona', AGENT_PERSONA_DEFAULT)
+    tts_engine = agent_config.get('tts_engine', TTS_ENGINE_DEFAULT)
+    tts_reference = agent_config.get('tts_reference', CHATTERBOX_REF_DEFAULT)
 
-    # Load identity files from Identity/ folder
+    # Load identity files from Identity/ folder + custom memory directory
     identity_context = load_identity(IDENTITY_DIR)
+    memory_dir = agent_config.get('memory_dir', '').strip()
+    # Normalize Windows-style paths (B:\foo\bar) to WSL (/mnt/b/foo/bar)
+    if memory_dir and ':' in memory_dir[:3]:
+        drive, rest = memory_dir.split(':', 1)
+        memory_dir = f"/mnt/{drive.lower().strip()}{rest.replace('\\', '/')}"
+        log("IDENTITY", f"Normalized memory dir to: {memory_dir}")
+    if memory_dir and os.path.isdir(memory_dir):
+        extra_context = load_identity(memory_dir)
+        if extra_context:
+            identity_context = (identity_context + "\n\n" + extra_context).strip()
+            log("IDENTITY", f"Merged custom memory directory: {memory_dir}")
 
     if not os.path.exists(MODE_FILE):
         with open(MODE_FILE, 'w') as f:
@@ -773,12 +930,13 @@ def main():
     speaker = None
     if not args.no_tts:
         thinker = Thinker(llm_model, agent_name, persona, identity_context)
-        speaker = Speaker(voice_model)
+        speaker = Speaker(voice_model, engine=tts_engine, tts_reference=tts_reference)
 
     transcript_buffer = []
     last_minute_stamp = None
     last_think_time = 0
     THINK_INTERVAL = 4
+    last_tts_sig = None  # (engine, voice, ref) — rebuild Speaker when dashboard changes it
 
     log("ARMCHAIR", "=" * 60)
     log("ARMCHAIR", f"AGENT IN THE ARMCHAIR — {agent_name} (streaming)")
@@ -787,7 +945,9 @@ def main():
     log("ARMCHAIR", f"VAD: Silero (threshold={VAD_THRESHOLD})")
     log("ARMCHAIR", f"Diarization: {'enabled' if diarizer else 'disabled'}")
     log("ARMCHAIR", f"LLM: {llm_model if thinker else 'disabled'}")
-    log("ARMCHAIR", f"TTS: {voice_model if speaker else 'disabled'}")
+    log("ARMCHAIR", f"TTS: {tts_engine} ({voice_model if tts_engine == 'piper' else ('Muska ref' if tts_engine == 'chatterbox' else KOKORO_VOICE_DEFAULT)})" + (" — disabled" if not speaker else ""))
+    if memory_dir:
+        log("ARMCHAIR", f"Memory dir: {memory_dir}")
     log("ARMCHAIR", f"Agent: {agent_name}")
     log("ARMCHAIR", f"Dashboard: http://localhost:8765")
     log("ARMCHAIR", "")
@@ -806,6 +966,28 @@ def main():
 
     silence_counter = 0
     SILENCE_TIMEOUT = 2  # seconds of silence before committing utterance
+
+    # Prewarm watcher — dashboard writes engine name to PREWARM_FILE to
+    # load a TTS model in the background before it's needed
+    def prewarm_watcher():
+        last_seen = None
+        while running:
+            try:
+                with open(PREWARM_FILE, 'r') as f:
+                    engine = f.read().strip()
+                if engine and engine != last_seen and get_worker(engine):
+                    last_seen = engine
+                    log("TTS", f"Prewarming {engine} worker (background)...")
+                    w = get_worker(engine)
+                    if w.proc is None or w.proc.poll() is not None:
+                        w._start()
+            except FileNotFoundError:
+                pass
+            except Exception as e:
+                log("TTS", f"Prewarm error: {e}")
+            time.sleep(1.0)
+
+    threading.Thread(target=prewarm_watcher, daemon=True).start()
 
     while running:
         # Read audio from the stream
@@ -898,6 +1080,21 @@ def main():
                                 transcript_buffer.append(f"{agent_name}: {cleaned}")
                                 with open(TRANSCRIPT_FILE, 'w') as f:
                                     f.write('\n'.join(transcript_buffer))
+
+                                # Hot-swap TTS engine/voice if dashboard config changed mid-call
+                                cfg_now = get_agent_config()
+                                tts_sig = (cfg_now.get('tts_engine', TTS_ENGINE_DEFAULT),
+                                           cfg_now.get('voice', TTS_VOICE_DEFAULT),
+                                           cfg_now.get('tts_reference', CHATTERBOX_REF_DEFAULT))
+                                if speaker and tts_sig != last_tts_sig:
+                                    try:
+                                        new_speaker = Speaker(tts_sig[1], engine=tts_sig[0], tts_reference=tts_sig[2])
+                                        # Workers stay warm in pool — no kill, instant switch-back
+                                        speaker = new_speaker
+                                        last_tts_sig = tts_sig
+                                        log("TTS", f"Voice/engine switched -> {tts_sig[0]} ({tts_sig[1] if tts_sig[0]=='piper' else 'cloned'})")
+                                    except Exception as e:
+                                        log("TTS", f"Engine switch failed: {e}")
 
                                 if speaker and not speaker.speaking:
                                     speaker.speaking = True

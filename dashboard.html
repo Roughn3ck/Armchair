@@ -82,6 +82,14 @@ body { background: #0a0a0a; color: #e0e0e0; font-family: 'Segoe UI', 'Helvetica 
 <input type="text" id="cfgAgentName" value="Agricola" onchange="saveAgentConfig()">
 </div>
 <div class="config-row">
+<label>TTS Engine:</label>
+<select id="cfgEngine" onchange="saveAgentConfig()">
+<option value="piper">Piper (fast, built-in voices)</option>
+<option value="kokoro">Kokoro (premium quality voices)</option>
+<option value="chatterbox">Chatterbox (voice cloning — Muska)</option>
+</select>
+</div>
+<div class="config-row" id="rowVoice">
 <label>Voice:</label>
 <select id="cfgVoice" onchange="saveAgentConfig()">
 <option value="en_GB-alan-medium">Alan (British RP, commanding) ⭐</option>
@@ -95,6 +103,15 @@ body { background: #0a0a0a; color: #e0e0e0; font-family: 'Segoe UI', 'Helvetica 
 <option value="en_US-lessac-medium">Lessac Medium (US)</option>
 <option value="en_US-amy-low">Amy (US, female, soft)</option>
 </select>
+</div>
+<div class="config-row" id="rowReference" style="display:none;">
+<label>Ref WAV:</label>
+<input type="text" id="cfgTtsReference" placeholder="/home/krisr/.local/share/chatterbox/muska-reference.wav" onchange="saveAgentConfig()">
+<button class="save-btn" onclick="prewarmEngine()">⚡ Activate</button>
+</div>
+<div class="config-row">
+<label>Memory:</label>
+<input type="text" id="cfgMemoryDir" placeholder="Custom memory directory (optional), e.g. /mnt/b/OpenClaw/.openclaw/workspace/muska/memory" onchange="saveAgentConfig()">
 </div>
 </div>
 
@@ -114,7 +131,7 @@ body { background: #0a0a0a; color: #e0e0e0; font-family: 'Segoe UI', 'Helvetica 
 </div>
 
 <div class="footer">
-Agent In The Armchair — VTT + AI Agent • Whisper (CUDA) • pyannote-audio • Piper TTS • Invisible to Teams
+Agent In The Armchair — VTT + AI Agent • Whisper (CUDA) • pyannote-audio • TTS: Piper / Kokoro / Chatterbox • Invisible to Teams
 </div>
 
 <script>
@@ -139,14 +156,38 @@ function setMode(mode) {
 }
 
 function saveAgentConfig() {
+    const refVal = document.getElementById('cfgTtsReference').value;
     const config = {
         name: document.getElementById('cfgAgentName').value,
-        voice: document.getElementById('cfgVoice').value
+        voice: document.getElementById('cfgVoice').value,
+        tts_engine: document.getElementById('cfgEngine').value,
+        memory_dir: document.getElementById('cfgMemoryDir').value
     };
+    // Only send reference when non-empty — don't clobber a configured default
+    if (refVal.trim()) config.tts_reference = refVal.trim();
     fetch('/api/agent-config', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(config)
+    }).catch(() => {});
+}
+
+function onEngineChange() {
+    const engine = document.getElementById('cfgEngine').value;
+    document.getElementById('rowVoice').style.display = engine === 'piper' ? '' : 'none';
+    document.getElementById('rowReference').style.display = engine === 'chatterbox' ? '' : 'none';
+}
+document.getElementById('cfgEngine').addEventListener('change', onEngineChange);
+
+function prewarmEngine() {
+    const engine = document.getElementById('cfgEngine').value;
+    fetch('/api/tts-prewarm', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({engine: engine})
+    }).then(() => {
+        const btn = document.querySelector('#rowReference .save-btn');
+        if (btn) { btn.textContent = '⚡ Loading...'; setTimeout(() => btn.textContent = '⚡ Activate', 8000); }
     }).catch(() => {});
 }
 
@@ -240,7 +281,19 @@ async function update() {
             if (agentConfig.voice && document.getElementById('cfgVoice').value !== agentConfig.voice) {
                 document.getElementById('cfgVoice').value = agentConfig.voice;
             }
+            if (agentConfig.tts_engine && document.getElementById('cfgEngine').value !== agentConfig.tts_engine) {
+                document.getElementById('cfgEngine').value = agentConfig.tts_engine;
+                onEngineChange();
+            }
+            if (typeof agentConfig.tts_reference === 'string' && document.getElementById('cfgTtsReference') !== null && document.activeElement !== document.getElementById('cfgTtsReference')) {
+                if (agentConfig.tts_reference) document.getElementById('cfgTtsReference').value = agentConfig.tts_reference;
+            }
+            if (typeof agentConfig.memory_dir === 'string' && document.activeElement !== document.getElementById('cfgMemoryDir')) {
+                document.getElementById('cfgMemoryDir').value = agentConfig.memory_dir || '';
+            }
         }
+        // Ensure correct visibility on first load
+        if (document.getElementById('rowVoice')) onEngineChange();
 
         // Speaker names — merge detected speakers with user-entered names
         if (data.detected_speakers) {
