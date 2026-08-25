@@ -32,6 +32,19 @@ if errorlevel 1 (
 for /f "delims=" %%v in ('python --version 2^>^^&1') do set "PYVER=%%v"
 echo [OK] %PYVER%
 
+REM --- Check ffmpeg ---
+where ffmpeg >nul 2>&1
+if errorlevel 1 (
+    if exist "C:\Users\%USERNAME%\Documents\ffmpeg\ffmpeg.exe" (
+        echo [OK] ffmpeg found at C:\Users\%USERNAME%\Documents\ffmpeg\
+    ) else (
+        echo [WARN] ffmpeg not found. Install ffmpeg and add to PATH, or set FFMPEG_PATH in .env
+        echo       Download: https://ffmpeg.org/download.html
+    )
+) else (
+    echo [OK] ffmpeg on PATH
+)
+
 REM --- Create directories ---
 mkdir "%VENV_DIR%" 2>nul
 mkdir "%TMP_DIR%" 2>nul
