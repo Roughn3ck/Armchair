@@ -43,6 +43,10 @@ import numpy as np
 # Add whisper_streaming to path
 sys.path.insert(0, '/tmp/whisper_streaming')
 
+# Platform abstraction
+from platform_config import Platform
+_pf = Platform.detect()
+
 # ============================================================
 # .ENV LOADER
 # ============================================================
@@ -79,7 +83,7 @@ def env_bool(key, default=False):
 # ============================================================
 # CONFIG
 # ============================================================
-AUDIO_FILE = "/mnt/b/armchair_audio.raw"
+AUDIO_FILE = _pf.audio_input_path
 SAMPLE_RATE = 16000
 SILENCE_THRESHOLD = 3  # % amplitude — fallback silence detection
 READ_INTERVAL = 0.5   # How often to read from the raw file (seconds)
@@ -123,7 +127,7 @@ KOKORO_PY = "/home/krisr/.local/share/kokoro-venv/bin/python"
 # Hard-wired for now — Muska voice reference (break out to config later)
 CHATTERBOX_REF_DEFAULT = "/home/krisr/.local/share/chatterbox/muska-reference.wav"
 KOKORO_VOICE_DEFAULT = "af_heart"
-TTS_OUTPUT_DIR = "/mnt/b/armchair_tmp/tts"
+TTS_OUTPUT_DIR = _pf.tts_output_dir
 
 # Agent defaults
 AGENT_NAME_DEFAULT = "Agricola"
@@ -147,11 +151,11 @@ PREWARM_FILE = "/tmp/armchair/tts_prewarm.txt"
 SPEAKER_NAMES_FILE = "/tmp/armchair/speaker_names.json"
 DETECTED_SPEAKERS_FILE = "/tmp/armchair/detected_speakers.json"
 AGENT_CONFIG_FILE = "/tmp/armchair/agent_config.json"
-TTS_PLAYBACK_DIR = "/mnt/b/armchair_tmp"
-TTS_OUTPUT_DIR = "/mnt/b/armchair_tmp/tts"
+TTS_PLAYBACK_DIR = _pf.session_log_dir.rsplit('/', 1)[0] if _pf.name != 'windows' else os.path.dirname(_pf.session_log_dir)
+TTS_OUTPUT_DIR = _pf.tts_output_dir
 
-# Session logs — archived to Windows side
-SESSION_LOG_DIR = "/mnt/b/armchair_tmp/session_logs"
+# Session logs
+SESSION_LOG_DIR = _pf.session_log_dir
 
 # Identity folder — agent context files loaded on startup
 IDENTITY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Identity")
@@ -406,22 +410,26 @@ class StreamingTranscriber:
 
     def __init__(self, model_name, device="cuda", compute_type="float16"):
         os.environ['HF_HUB_DISABLE_TELEMETRY'] = '1'
-        os.environ['XDG_CACHE_HOME'] = '/home/krisr/.local/share/whisper'
-        cuda = '/home/krisr/.local/share/whisper-venv/lib/python3.12/site-packages/nvidia/cublas/lib'
-        nvrtc = '/home/krisr/.local/share/whisper-venv/lib/python3.12/site-packages/nvidia/cuda_nvrtc/lib'
-        ld = os.environ.get('LD_LIBRARY_PATH', '')
-        os.environ['LD_LIBRARY_PATH'] = f"{cuda}:{nvrtc}:{ld}"
+        os.environ['XDG_CACHE_HOME'] = env('WHISPER_CACHE', _pf.whisper_cache_dir)
+        if _pf.whisper_venv_lib:
+            cuda = os.path.join(_pf.whisper_venv_lib, 'nvidia/cublas/lib')
+            nvrtc = os.path.join(_pf.whisper_venv_lib, 'nvidia/cuda_nvrtc/lib')
+            ld = os.environ.get('LD_LIBRARY_PATH', '')
+            os.environ['LD_LIBRARY_PATH'] = f"{cuda}:{nvrtc}:{ld}"
 
-        import ctypes
-        for lib in ['libcublas.so.12', 'libcublasLt.so.12', 'libcudart.so.12']:
-            for d in [cuda, nvrtc]:
-                path = os.path.join(d, lib)
-                if os.path.exists(path):
-                    try:
-                        ctypes.CDLL(path)
-                    except OSError:
-                        pass
-                    break
+            import ctypes
+            for lib in ['libcublas.so.12', 'libcublasLt.so.12', 'libcudart.so.12']:
+                for d in [cuda, nvrtc]:
+                    path = os.path.join(d, lib)
+                    if os.path.exists(path):
+                        try:
+                            ctypes.CDLL(path)
+                        except OSError:
+                            pass
+                        break
+        else:
+            # Linux-native or Windows — libs should be on path already
+            pass
 
         from faster_whisper import WhisperModel
         log("STT", f"Loading {model_name} ({device}/{compute_type})...")
@@ -505,11 +513,8 @@ class Diarizer:
         token = os.environ.get('HF_TOKEN', '')
         if not token:
             try:
-                with open('/mnt/b/OpenClaw/.openclaw/.env', 'r') as f:
-                    for line in f:
-                        if line.startswith('HF_TOKEN='):
-                            token = line.strip().split('=', 1)[1]
-                            break
+                # Check .env file via env() loader
+                token = env('HF_TOKEN', '')
             except Exception:
                 pass
 
@@ -887,8 +892,9 @@ class Speaker:
         self.voice_model = voice_model
         self.tts_reference = tts_reference or CHATTERBOX_REF_DEFAULT
         self.speaking = False
+        self.audio_output = _pf.create_audio_output()
         os.makedirs(TTS_OUTPUT_DIR, exist_ok=True)
-        os.makedirs(TTS_PLAYBACK_DIR, exist_ok=True)
+        os.makedirs(_pf.tmp_dir, exist_ok=True)
 
         self.worker = None  # lazily created for kokoro/chatterbox
 
@@ -935,11 +941,8 @@ class Speaker:
             return
 
         timestamp = int(time.time() * 1000)
-        # Generate on native WSL fs (/tmp) — reliable & fast; only playback copies over drvfs
-        os.makedirs("/tmp/armchair_tts", exist_ok=True)
-        wav_path = f"/tmp/armchair_tts/agent_{timestamp}.wav"
-        wsl_playback = f"{TTS_PLAYBACK_DIR}/agent_{timestamp}.wav"
-        win_playback = f"B:\\armchair_tmp\\agent_{timestamp}.wav"
+        # Generate on native fs — reliable & fast; AudioOutput handles the bridge
+        wav_path = f"{_pf.tmp_dir}/agent_{timestamp}.wav"
 
         log("TTS", f"Generating ({self.engine}): {text[:100]}")
 
@@ -967,31 +970,19 @@ class Speaker:
                 # Worker said ok — trust it and attempt the copy anyway
                 log("TTS", f"WAV slow to appear, trying copy anyway: {wav_path}")
 
-            # Shared playback path (Windows-side PowerShell PlaySync)
-            shutil.copy2(wav_path, wsl_playback)
-            if not os.path.exists(wsl_playback):
-                log("TTS", f"ERROR: WAV not copied to {wsl_playback}")
-                return
-
-            log("TTS", f"WAV ready: {win_playback}")
-            powershell = '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe'
-            play_cmd = [
-                powershell, '-c',
-                f"(New-Object System.Media.SoundPlayer '{win_playback}').PlaySync()"
-            ]
             log("TTS", f"{agent_name}: {text[:80]}...")
-            result = subprocess.run(play_cmd, capture_output=True, text=True, timeout=30)
-            if result.returncode != 0:
-                log("TTS", f"PlaySync error: {result.stderr[:200]}")
+            self.audio_output.play(wav_path)
 
         except subprocess.TimeoutExpired:
             log("TTS", "Timeout")
         except Exception as e:
             log("TTS", f"Error: {e}")
         finally:
-            for p in [wav_path, wsl_playback]:
-                if os.path.exists(p):
-                    os.remove(p)
+            if os.path.exists(wav_path):
+                try:
+                    os.remove(wav_path)
+                except Exception:
+                    pass
 
 
 # ============================================================
@@ -1011,11 +1002,12 @@ def main():
     args = parser.parse_args()
 
     os.makedirs("/tmp/armchair", exist_ok=True)
-    os.makedirs(TTS_OUTPUT_DIR, exist_ok=True)
-    os.makedirs(TTS_PLAYBACK_DIR, exist_ok=True)
+    os.makedirs(_pf.tts_output_dir, exist_ok=True)
+    os.makedirs(_pf.tmp_dir, exist_ok=True)
+    os.makedirs(_pf.session_log_dir, exist_ok=True)
 
     # Load .env (API keys, provider config)
-    load_env()
+    load_env(_pf.env_file)
 
     # Create session folder
     session_start = time.strftime("%Y-%m-%d_%H%M%S")
@@ -1118,9 +1110,8 @@ def main():
         log("ARMCHAIR", f"Memory dir: {memory_dir}")
     log("ARMCHAIR", f"Agent: {agent_name}")
     log("ARMCHAIR", f"Dashboard: http://localhost:8765")
-    log("ARMCHAIR", "")
+    log("ARMCHAIR", f"Platform: {_pf.name}")
     log("ARMCHAIR", "Waiting for audio stream...")
-    log("ARMCHAIR", "  Run stream_to_file.bat on Windows")
     log("ARMCHAIR", "")
 
     running = True
