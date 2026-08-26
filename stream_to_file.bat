@@ -1,5 +1,5 @@
 @echo off
-REM stream_to_file.bat — Captures meeting audio + your mic to raw file
+REM stream_to_file.bat - Captures meeting audio + your mic to raw file
 REM Meeting audio: CABLE-A Output (VB-Audio Virtual Cable)
 REM Microphone: configurable below
 REM Both mixed into one 16kHz mono stream
@@ -8,7 +8,7 @@ REM Usage: stream_to_file.bat
 REM Stop: Ctrl+C
 
 REM ============================================================
-REM  CONFIG — edit these for your setup
+REM  CONFIG - edit these for your setup
 REM ============================================================
 set "OUTPUT_FILE=%~dp0..\armchair_audio.raw"
 set "FFMPEG=C:\Users\krisr\Documents\ffmpeg\ffmpeg.exe"
@@ -22,7 +22,7 @@ if defined ARMCHAIR_CABLE_DEVICE set "CABLE_DEVICE=%ARMCHAIR_CABLE_DEVICE%"
 if defined ARMCHAIR_MIC_DEVICE set "MIC_DEVICE=%ARMCHAIR_MIC_DEVICE%"
 
 echo ================================================
-echo AGENT IN THE ARMCHAIR — AUDIO CAPTURE
+echo AGENT IN THE ARMCHAIR - AUDIO CAPTURE
 echo ================================================
 echo.
 echo Capturing from:
@@ -43,4 +43,4 @@ if exist "%OUTPUT_FILE%" del "%OUTPUT_FILE%"
   -f dshow -i "audio=%MIC_DEVICE%" ^
   -filter_complex "[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=0[a]" ^
   -map "[a]" ^
-  -ac 1 -ar 16000 -sample_fmt s16 -f s16le "%OUTPUT_FILE%"
+  -ac 1 -ar 16000 -sample_fmt s16 -f s16le "%OUTPUT_FILE%"

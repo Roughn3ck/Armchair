@@ -28,6 +28,7 @@ import struct
 import wave
 import os
 import sys
+import atexit
 import time
 import json
 import signal
@@ -118,14 +119,14 @@ TZ_OVERRIDE = None  # e.g. "America/Montreal" — set by dashboard settings
 # TTS config (engines)
 TTS_VOICE_DEFAULT = "en_GB-alan-medium"
 TTS_ENGINE_DEFAULT = "piper"  # piper | kokoro | chatterbox
-PIPER_BIN = "/home/krisr/.local/bin/piper"
-PIPER_MODELS_DIR = "/home/krisr/.local/share/piper"
+PIPER_BIN = _pf.piper_bin
+PIPER_MODELS_DIR = _pf.piper_models_dir
 CHATTERBOX_WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tts_workers", "chatterbox_worker.py")
-CHATTERBOX_PY = "/home/krisr/.local/share/chatterbox-venv/bin/python"
+CHATTERBOX_PY = _pf.chatterbox_python
 KOKORO_WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tts_workers", "kokoro_worker.py")
-KOKORO_PY = "/home/krisr/.local/share/kokoro-venv/bin/python"
+KOKORO_PY = _pf.kokoro_python
 # Hard-wired for now — Muska voice reference (break out to config later)
-CHATTERBOX_REF_DEFAULT = "/home/krisr/.local/share/chatterbox/muska-reference.wav"
+CHATTERBOX_REF_DEFAULT = _pf.chatterbox_ref_default
 KOKORO_VOICE_DEFAULT = "af_heart"
 TTS_OUTPUT_DIR = _pf.tts_output_dir
 
@@ -411,7 +412,17 @@ class StreamingTranscriber:
     def __init__(self, model_name, device="cuda", compute_type="float16"):
         os.environ['HF_HUB_DISABLE_TELEMETRY'] = '1'
         os.environ['XDG_CACHE_HOME'] = env('WHISPER_CACHE', _pf.whisper_cache_dir)
-        if _pf.whisper_venv_lib:
+        if _pf.name == 'windows':
+            # Windows: point Python's DLL loader at torch's bundled CUDA DLLs
+            import glob
+            site = os.path.join(os.path.dirname(sys.executable), 'Lib', 'site-packages')
+            for pattern in ['nvidia**\\cublas\\bin', 'nvidia**\\cudnn\\bin', 'torch\\lib']:
+                for d in glob.glob(os.path.join(site, pattern), recursive=True):
+                    try:
+                        os.add_dll_directory(d)
+                    except (OSError, AttributeError):
+                        pass
+        elif _pf.whisper_venv_lib:
             cuda = os.path.join(_pf.whisper_venv_lib, 'nvidia/cublas/lib')
             nvrtc = os.path.join(_pf.whisper_venv_lib, 'nvidia/cuda_nvrtc/lib')
             ld = os.environ.get('LD_LIBRARY_PATH', '')
@@ -1008,6 +1019,38 @@ def main():
 
     # Load .env (API keys, provider config)
     load_env(_pf.env_file)
+
+    # Single-instance lock: refuse to start if another pipeline is already running
+    lock_path = os.path.join(_pf.tmp_dir, 'armchair_live.pid')
+    try:
+        if os.path.exists(lock_path):
+            with open(lock_path) as f:
+                old_pid = int(f.read().strip() or 0)
+            if old_pid and old_pid != os.getpid():
+                try:
+                    os.kill(old_pid, 0)  # signal 0 = existence check only
+                    print(f"[LOCK] Another Armchair pipeline is already running (PID {old_pid}).")
+                    print("       Close it first (Ctrl+C in its window), or delete:")
+                    print(f"       {lock_path}")
+                    sys.exit(1)
+                except (ProcessLookupError, PermissionError):
+                    pass  # stale lock, process is gone — take over
+        with open(lock_path, 'w') as f:
+            f.write(str(os.getpid()))
+    except ValueError:
+        # corrupt lock file — overwrite
+        with open(lock_path, 'w') as f:
+            f.write(str(os.getpid()))
+
+    def _remove_lock():
+        try:
+            if os.path.exists(lock_path):
+                with open(lock_path) as f:
+                    if f.read().strip() == str(os.getpid()):
+                        os.remove(lock_path)
+        except OSError:
+            pass
+    atexit.register(_remove_lock)
 
     # Create session folder
     session_start = time.strftime("%Y-%m-%d_%H%M%S")

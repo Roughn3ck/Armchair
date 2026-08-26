@@ -133,6 +133,7 @@ class Platform:
     def piper_bin(self): raise NotImplementedError
     @property
     def piper_models_dir(self): raise NotImplementedError
+    def chatterbox_ref_default(self): raise NotImplementedError
     @property
     def chatterbox_python(self): raise NotImplementedError
     @property
@@ -198,6 +199,10 @@ class WSLPlatform(Platform):
         return os.environ.get('PIPER_MODELS_DIR', '/home/krisr/.local/share/piper')
 
     @property
+    def chatterbox_ref_default(self):
+        return '/home/krisr/.local/share/chatterbox/muska-reference.wav'
+
+    @property
     def chatterbox_python(self):
         return os.environ.get('CHATTERBOX_PY', '/home/krisr/.local/share/chatterbox-venv/bin/python')
 
@@ -244,6 +249,10 @@ class LinuxPlatform(Platform):
     @property
     def piper_models_dir(self):
         return os.environ.get('PIPER_MODELS_DIR', os.path.expanduser('~/.local/share/piper'))
+
+    @property
+    def chatterbox_ref_default(self):
+        return os.path.expanduser('~/.local/share/chatterbox/muska-reference.wav')
 
     @property
     def chatterbox_python(self):
@@ -314,6 +323,10 @@ class WindowsPlatform(Platform):
     @property
     def piper_models_dir(self):
         return os.environ.get('PIPER_MODELS_DIR', os.path.join(self._root, 'piper'))
+
+    @property
+    def chatterbox_ref_default(self):
+        return os.path.join(os.path.dirname(self._root), 'voices', 'muska-reference.wav')
 
     @property
     def chatterbox_python(self):

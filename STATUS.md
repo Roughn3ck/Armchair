@@ -53,8 +53,8 @@
 - [ ] `config.toml` — all user-configurable paths, devices, venv locations
 - [ ] `start_armchair.sh` — Linux one-click launcher
 
-### v2.5 — Linux-Native Build & Test
-- [ ] Pre-flight: full system scan before dual-boot (RAID integrity, disk health, backup verification)
+### v2.5 — Linux-Native Build & Test (~7 Sep 2026 — delayed by RAID drive failure, RMA ~10 days)
+- [ ] Pre-flight: full system scan before dual-boot (RAID integrity, disk health, backup verification) — RAID rebuild pending RMA return
 - [ ] Boot into Linux, verify CUDA/torch/pyannote stack
 - [ ] Install TTS venvs natively (piper, kokoro, chatterbox)
 - [ ] PipeWire virtual sink setup + test (replaces Voicemeeter/VB-Cable)

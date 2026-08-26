@@ -469,14 +469,17 @@ async function update() {
 
         if (data.agent_config) {
             agentConfig = data.agent_config;
-            if (agentConfig.name && document.getElementById('cfgAgentName').value !== agentConfig.name) {
-                document.getElementById('cfgAgentName').value = agentConfig.name;
+            const nameEl = document.getElementById('cfgAgentName');
+            if (agentConfig.name && nameEl.value !== agentConfig.name && document.activeElement !== nameEl) {
+                nameEl.value = agentConfig.name;
             }
-            if (agentConfig.voice && document.getElementById('cfgVoice').value !== agentConfig.voice) {
-                document.getElementById('cfgVoice').value = agentConfig.voice;
+            const voiceEl = document.getElementById('cfgVoice');
+            if (agentConfig.voice && voiceEl.value !== agentConfig.voice && document.activeElement !== voiceEl) {
+                voiceEl.value = agentConfig.voice;
             }
-            if (agentConfig.tts_engine && document.getElementById('cfgEngine').value !== agentConfig.tts_engine) {
-                document.getElementById('cfgEngine').value = agentConfig.tts_engine;
+            const engineEl = document.getElementById('cfgEngine');
+            if (agentConfig.tts_engine && engineEl.value !== agentConfig.tts_engine && document.activeElement !== engineEl) {
+                engineEl.value = agentConfig.tts_engine;
                 onEngineChange();
             }
             if (typeof agentConfig.tts_reference === 'string' && document.getElementById('cfgTtsReference') !== null && document.activeElement !== document.getElementById('cfgTtsReference')) {

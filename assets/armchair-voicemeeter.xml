@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Armchair Voicemeeter Banana preset - verified working routing
+     Load via: Voicemeeter Menu > Load settings > this file -->
+<Voicemeeter>
+  <Strips>
+    <!-- Strip 1: Hardware Input 1 = your physical microphone (e.g. Jabra PanaCast) -->
+    <Strip1 A1="1" B1="1" Mono="1"/>
+    <!-- Virtual strips: CABLE-A Output rides into the mix -->
+    <Strip5 A1="1" B1="1"/>
+  </Strips>
+  <Bus>
+    <!-- A1 = physical speakers/headphones, B1 = virtual out to call app -->
+    <A1 EQ="0"/>
+    <B1 EQ="0"/>
+  </Bus>
+</Voicemeeter>

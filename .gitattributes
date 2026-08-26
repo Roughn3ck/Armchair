@@ -1,0 +1,4 @@
+# Batch files must keep CRLF — CMD misparses if/else blocks with LF endings
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf

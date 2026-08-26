@@ -1,6 +1,6 @@
 @echo off
 REM ============================================================
-REM  Agent In The Armchair — Windows Launcher (single window)
+REM  Agent In The Armchair - Windows Launcher (single window)
 REM  Starts audio capture + dashboard + pipeline in one process.
 REM  Ctrl+C stops everything cleanly.
 REM ============================================================
@@ -34,6 +34,17 @@ if defined ARMCHAIR_MIC_DEVICE (
     set "MIC_DEVICE=Microphone (Jabra PanaCast 20)"
 )
 
+REM --- Piper voices check: repo ships starter voices; open catalog only if none exist ---
+set "PIPER_VOICES_FOUND=0"
+set "VOICES_DIR=%ROOT%voices"
+for %%f in ("%VOICES_DIR%\*.onnx") do set "PIPER_VOICES_FOUND=1"
+if "%PIPER_VOICES_FOUND%"=="0" (
+    echo [INFO] No Piper voices found in %VOICES_DIR%
+    echo [INFO] Note: the .wav files in voices\ are just previews - Piper needs the .onnx model
+    start "" "https://github.com/rhasspy/piper/blob/master/VOICES.md"
+    timeout /t 5 /nobreak >nul
+)
+
 REM --- Check ffmpeg ---
 if not exist "%FFMPEG%" (
     where ffmpeg >nul 2>&1
@@ -46,7 +57,7 @@ if not exist "%FFMPEG%" (
 )
 
 echo ================================================
-echo   Agent In The Armchair — Executive Mind v2.6
+echo   Agent In The Armchair - Executive Mind v2.6
 echo ================================================
 echo.
 
@@ -65,22 +76,34 @@ start /b "" "%FFMPEG%" -y ^
 REM --- Wait for audio file to appear ---
 timeout /t 2 /nobreak >nul
 
+REM --- Kill any stale Armchair processes (prevents double-pipeline zombies) ---
+powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object { $_.CommandLine -like '*armchair_live.py*' -or $_.CommandLine -like '*dashboard_server.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
+taskkill /f /im ffmpeg.exe >nul 2>&1
+
 REM --- Start dashboard server (background, no window) ---
 echo [INFO] Starting dashboard on http://localhost:8765 ...
 start /b "" "%WHISPER_PY%" "%ROOT%dashboard_server.py" >nul 2>&1
+timeout /t 1 /nobreak >nul
+powershell -NoProfile -Command "try { $null = Invoke-WebRequest -Uri 'http://localhost:8765/api/status' -UseBasicParsing -TimeoutSec 3; exit 0 } catch { exit 1 }" >nul 2>&1
+if errorlevel 1 (
+    echo [WARN] Dashboard did not respond on port 8765. Something else may be holding the port.
+    echo        Check with: netstat -ano ^| findstr :8765
+) else (
+    echo [OK] Dashboard is up.
+)
 
 REM --- Open browser ---
 timeout /t 1 /nobreak >nul
 start http://localhost:8765
 
-REM --- Start main pipeline (foreground — Ctrl+C stops here) ---
+REM --- Start main pipeline (foreground - Ctrl+C stops here) ---
 echo [INFO] Starting pipeline...
 echo [INFO] Press Ctrl+C to stop (session saves automatically)
 echo.
 "%WHISPER_PY%" "%ROOT%armchair_live.py" %*
 
 REM ============================================================
-REM  Cleanup — runs after pipeline exits (Ctrl+C or error)
+REM  Cleanup - runs after pipeline exits (Ctrl+C or error)
 REM ============================================================
 echo.
 echo [INFO] Stopping all components...
@@ -98,4 +121,4 @@ REM Clean up audio file
 if exist "%OUTPUT_FILE%" del "%OUTPUT_FILE%" 2>nul
 
 echo [INFO] All stopped. Session archived.
-pause
+pause
