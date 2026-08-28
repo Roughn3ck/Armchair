@@ -216,11 +216,10 @@ Chatterbox speaks in **any voice you give it** — clone yourself, a character, 
 - Mono WAV (24kHz or 48kHz), consistent mic distance
 - No music, no cross-talk — conversational energy works better than reading
 
-**2. Place it somewhere stable**, e.g.:
+**2. Place it in the repo voices folder** (single voices dir for ALL engines — Piper models, chatterbox refs, kokoro assets):
 ```
-C:\armchair\voices\muska-reference.wav
+C:\armchair\Armchair\voices\muska-reference.wav
 ```
-(Keeping voices outside the repo folder keeps git clean.)
 
 **3. Point Armchair at it (two ways):**
 - **Dashboard** — TTS Engine → `chatterbox`, paste the path into **Ref WAV**, save. Swaps in on the next utterance, no restart.

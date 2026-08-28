@@ -245,6 +245,24 @@ def format_speaker(speaker_id, names=None):
     return speaker_id
 
 
+# ============================================================
+# IDENTITY LOADING + CURATION
+# ============================================================
+# Voice-agent context tiers. The full agent workspace is agent-OPS data — most of
+# it is noise (or harmful, e.g. HEARTBEAT's "stay quiet" imperatives) for a realtime
+# voice persona. Curation keeps the persona sharp and prompt processing fast.
+#   T1 always: persona core        T2 recent: working context     T3 never: ops docs
+CURATION_TIER1 = ("soul.md", "identity.md", "user.md")
+CURATION_TIER2 = ("projects.md", "team-roster.md", "next.md", "memory/next.md")
+CURATION_TIER3 = ("tools.md", "directory.md", "agents.md", "social-accounts.md", "heartbeat.md")
+
+
+def _identity_date(name):
+    """Extract YYYY-MM-DD from a memory filename (e.g. memory/2026-08-28.md), else None."""
+    m = re.match(r"(?:memory/)?(\d{4}-\d{2}-\d{2})", name.lower())
+    return m.group(1) if m else None
+
+
 def _read_text(path):
     """Read a text file as UTF-8, falling back to cp1252 for legacy-encoded files.
 
@@ -269,52 +287,115 @@ def _read_text(path):
     return content
 
 
-def load_identity(identity_dir):
-    """Load all .md and .txt files from the Identity folder (including memory/ subfolder).
-    Returns concatenated text for the LLM system prompt.
+def load_identity(identity_dir, memory_dir="", max_chars=0, recent_days=14, skip_files=None):
+    """Collect identity + memory files, then curate for the voice-agent system prompt.
+
+    Tiers:
+      T1 always:  SOUL.md, IDENTITY.md, USER.md (persona core)
+      T2 recent:  PROJECTS.md, TEAM-ROSTER.md, NEXT.md + memory files
+                  (dated memory newest-first, only within recent_days)
+      T3 never:   TOOLS.md, DIRECTORY.md, AGENTS.md, SOCIAL-ACCOUNTS.md, HEARTBEAT.md
+                  (+ IDENTITY_SKIP_FILES) — agent-ops docs, not conversation context
+
+    max_chars=0 disables curation (legacy full-context behavior).
+    Files that fail decode/binary checks are skipped with a clear log.
     """
-    if not os.path.isdir(identity_dir):
-        log("IDENTITY", f"Folder not found: {identity_dir}")
-        return ""
+    skip = {s.strip().lower() for s in (skip_files or []) if s.strip()}
+    skip.update(CURATION_TIER3)
 
-    context_parts = []
-
-    # Load files from the Identity folder
-    for fname in sorted(os.listdir(identity_dir)):
-        fpath = os.path.join(identity_dir, fname)
-        if os.path.isfile(fpath) and fname.lower().endswith(('.md', '.txt')):
+    # Collect candidate parts from each directory (files + memory/ subfolder)
+    parts = []  # (name, block)
+    dirs = [identity_dir] + ([memory_dir] if memory_dir else [])
+    seen = set()
+    for d in dirs:
+        if not os.path.isdir(d):
+            if d == memory_dir:
+                log("IDENTITY", f"WARNING: memory dir not found, skipping: {d}")
+            continue
+        candidates = []
+        for fname in sorted(os.listdir(d)):
+            fpath = os.path.join(d, fname)
+            if os.path.isfile(fpath) and fname.lower().endswith(('.md', '.txt')):
+                candidates.append((fname, fpath))
+        mem_sub = os.path.join(d, "memory")
+        if os.path.isdir(mem_sub):
+            for fname in sorted(os.listdir(mem_sub)):
+                fpath = os.path.join(mem_sub, fname)
+                if os.path.isfile(fpath) and fname.lower().endswith(('.md', '.txt')):
+                    candidates.append((f"memory/{fname}", fpath))
+        for name, fpath in candidates:
+            if name in seen:
+                continue
+            seen.add(name)
             try:
                 content = _read_text(fpath)
-                if content is None:
-                    log("IDENTITY", f"Skipped (binary or undecodable): {fname}")
-                elif content:
-                    context_parts.append(f"--- {fname} ---\n{content}")
-                    log("IDENTITY", f"Loaded: {fname} ({len(content)} chars)")
             except Exception as e:
-                log("IDENTITY", f"Error reading {fname}: {e}")
+                log("IDENTITY", f"Error reading {name}: {e}")
+                continue
+            if content is None:
+                log("IDENTITY", f"Skipped (binary or undecodable): {name}")
+            elif content:
+                parts.append((name, f"--- {name} ---\n{content}"))
 
-    # Load files from memory/ subfolder
-    memory_dir = os.path.join(identity_dir, "memory")
-    if os.path.isdir(memory_dir):
-        for fname in sorted(os.listdir(memory_dir)):
-            fpath = os.path.join(memory_dir, fname)
-            if os.path.isfile(fpath) and fname.lower().endswith(('.md', '.txt')):
-                try:
-                    content = _read_text(fpath)
-                    if content is None:
-                        log("IDENTITY", f"Skipped (binary or undecodable): memory/{fname}")
-                    elif content:
-                        context_parts.append(f"--- memory/{fname} ---\n{content}")
-                        log("IDENTITY", f"Loaded: memory/{fname} ({len(content)} chars)")
-                except Exception as e:
-                    log("IDENTITY", f"Error reading memory/{fname}: {e}")
-
-    if context_parts:
-        log("IDENTITY", f"Loaded {len(context_parts)} files, {sum(len(p) for p in context_parts)} chars total")
-    else:
+    if not parts:
         log("IDENTITY", "No identity files found — using default persona only")
+        return ""
 
-    return "\n\n".join(context_parts)
+    loaded_chars = sum(len(b) for _, b in parts)
+
+    # Curation disabled — legacy full-context behavior
+    if max_chars <= 0:
+        log("IDENTITY", f"Loaded {len(parts)} files, {loaded_chars} chars total (curation disabled)")
+        return "\n\n".join(b for _, b in parts)
+
+    # Classify into tiers
+    t1, t2_other, t2_dated, t2_last = [], [], [], []
+    n_t3 = n_old = 0
+    cutoff = time.time() - recent_days * 86400 if recent_days and recent_days > 0 else None
+    for name, block in parts:
+        lname = name.lower()
+        if lname in skip:
+            n_t3 += 1
+            continue
+        if lname in CURATION_TIER1:
+            t1.append((name, block))
+            continue
+        d = _identity_date(lname)
+        if d and cutoff:
+            try:
+                if time.mktime(time.strptime(d, "%Y-%m-%d")) < cutoff:
+                    n_old += 1
+                    continue
+            except ValueError:
+                pass
+            t2_dated.append((name, block))
+        elif lname in CURATION_TIER2:
+            t2_other.append((name, block))
+        elif d:
+            t2_dated.append((name, block))
+        else:
+            # non-dated, not on any list (indexes, one-off reviews) — lowest priority
+            t2_last.append((name, block))
+    t1.sort(key=lambda p: CURATION_TIER1.index(p[0].lower()))
+    t2_dated.sort(key=lambda p: p[0], reverse=True)  # newest first
+
+    # Accumulate within budget. Priority: T1 core → T2 named → recent dated → leftovers.
+    # T1 is persona core — always kept, budget be damned.
+    kept = []
+    total = 0
+    n_budget = 0
+    for tier, group in ((1, t1), (2, t2_other), (2, t2_dated), (3, t2_last)):
+        for name, block in group:
+            if tier != 1 and total + len(block) > max_chars:
+                n_budget += 1
+                continue
+            kept.append(block)
+            total += len(block)
+
+    log("IDENTITY", f"Curation: kept {len(kept)} files ({total} chars of {loaded_chars}) — "
+                    f"skipped {n_t3} ops files, {n_old} old memory files, {n_budget} over budget "
+                    f"(budget {max_chars} chars)")
+    return "\n\n".join(kept)
 
 
 # ============================================================
@@ -989,7 +1070,13 @@ class Speaker:
             log("TTS", f"Engine: kokoro, voice: {KOKORO_VOICE_DEFAULT}")
         elif engine == "chatterbox":
             if not os.path.exists(self.tts_reference):
-                log("TTS", f"WARNING: Reference wav not found: {self.tts_reference}")
+                # Fallback: configured path missing — try the repo voices folder
+                alt = os.path.join(_pf.voices_dir, os.path.basename(self.tts_reference))
+                if os.path.exists(alt):
+                    self.tts_reference = alt
+                    log("TTS", f"Reference not found at configured path — using {alt}")
+                else:
+                    log("TTS", f"WARNING: Reference wav not found: {self.tts_reference}")
             else:
                 log("TTS", f"Engine: chatterbox, reference: {self.tts_reference}")
         else:
@@ -1205,7 +1292,17 @@ def main():
             log("ARMCHAIR", f"Timezone '{tz_str}' invalid: {e}")
 
     # Load identity files from Identity/ folder + custom memory directory
-    identity_context = load_identity(IDENTITY_DIR)
+    # Curation knobs (.env): IDENTITY_MAX_CHARS (0 = off), IDENTITY_RECENT_DAYS, IDENTITY_SKIP_FILES
+    try:
+        ident_max = int(env('IDENTITY_MAX_CHARS', '48000') or 0)
+    except ValueError:
+        ident_max = 48000
+    try:
+        ident_days = int(env('IDENTITY_RECENT_DAYS', '14') or 0)
+    except ValueError:
+        ident_days = 14
+    ident_skip = env('IDENTITY_SKIP_FILES', '')
+
     memory_dir = agent_config.get('memory_dir', '').strip()
     # Normalize Windows-style paths (B:\foo\bar) to WSL (/mnt/b/foo/bar)
     # WSL bridge ONLY — Windows-native and Linux-native use the path as-is
@@ -1213,16 +1310,15 @@ def main():
         drive, rest = memory_dir.split(':', 1)
         memory_dir = f"/mnt/{drive.lower().strip()}{rest.replace('\\', '/')}"
         log("IDENTITY", f"Normalized memory dir to: {memory_dir}")
+    if memory_dir and not os.path.isdir(memory_dir):
+        log("IDENTITY", f"WARNING: memory dir not found, skipping: {memory_dir}")
+        memory_dir = ""
+    identity_context = load_identity(
+        IDENTITY_DIR, memory_dir=memory_dir,
+        max_chars=ident_max, recent_days=ident_days,
+        skip_files=[s for s in ident_skip.split(',') if s.strip()])
     if memory_dir:
-        if os.path.isdir(memory_dir):
-            extra_context = load_identity(memory_dir)
-            if extra_context:
-                identity_context = (identity_context + "\n\n" + extra_context).strip()
-                log("IDENTITY", f"Merged custom memory directory: {memory_dir}")
-            else:
-                log("IDENTITY", f"Memory dir contains no .md/.txt content: {memory_dir}")
-        else:
-            log("IDENTITY", f"WARNING: memory dir not found, skipping: {memory_dir}")
+        log("IDENTITY", f"Merged custom memory directory: {memory_dir}")
 
     if not os.path.exists(MODE_FILE):
         with open(MODE_FILE, 'w') as f:

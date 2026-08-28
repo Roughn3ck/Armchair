@@ -122,6 +122,13 @@ class Platform:
 
     # --- Paths (override in subclasses) ---
     @property
+    def voices_dir(self):
+        """Single voices folder — repo-local, shared by ALL TTS engines.
+        Piper models (.onnx), chatterbox reference WAVs, kokoro assets: everything
+        voice-related lives here so clones work out of the box."""
+        return os.path.join(self.script_dir, 'voices')
+
+    @property
     def audio_input_path(self): raise NotImplementedError
     @property
     def tmp_dir(self): raise NotImplementedError
@@ -196,11 +203,12 @@ class WSLPlatform(Platform):
 
     @property
     def piper_models_dir(self):
-        return os.environ.get('PIPER_MODELS_DIR', '/home/krisr/.local/share/piper')
+        # Piper voice models live in the repo voices folder (single voices dir)
+        return os.environ.get('PIPER_MODELS_DIR', self.voices_dir)
 
     @property
     def chatterbox_ref_default(self):
-        return '/home/krisr/.local/share/chatterbox/muska-reference.wav'
+        return os.path.join(self.voices_dir, 'muska-reference.wav')
 
     @property
     def chatterbox_python(self):
@@ -248,11 +256,12 @@ class LinuxPlatform(Platform):
 
     @property
     def piper_models_dir(self):
-        return os.environ.get('PIPER_MODELS_DIR', os.path.expanduser('~/.local/share/piper'))
+        # Piper voice models live in the repo voices folder (single voices dir)
+        return os.environ.get('PIPER_MODELS_DIR', self.voices_dir)
 
     @property
     def chatterbox_ref_default(self):
-        return os.path.expanduser('~/.local/share/chatterbox/muska-reference.wav')
+        return os.path.join(self.voices_dir, 'muska-reference.wav')
 
     @property
     def chatterbox_python(self):
@@ -322,11 +331,12 @@ class WindowsPlatform(Platform):
 
     @property
     def piper_models_dir(self):
-        return os.environ.get('PIPER_MODELS_DIR', os.path.join(self._root, 'piper'))
+        # Piper voice models live in the repo voices folder (single voices dir)
+        return os.environ.get('PIPER_MODELS_DIR', self.voices_dir)
 
     @property
     def chatterbox_ref_default(self):
-        return os.path.join(os.path.dirname(self._root), 'voices', 'muska-reference.wav')
+        return os.path.join(self.voices_dir, 'muska-reference.wav')
 
     @property
     def chatterbox_python(self):

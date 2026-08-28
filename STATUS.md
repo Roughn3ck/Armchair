@@ -1,6 +1,36 @@
 # STATUS — Agent In The Armchair
 
-## Current Version: v2.7 (TTS reliability + clean console) — WORKING
+## Current Version: v2.8 (single voices dir + identity curation) — WORKING
+
+## Verified Live (2026-08-28, session 3 — voices + curation)
+
+**Single voices folder.** `C:\armchair\Armchair\voices\` (repo-local) is now the one voices
+folder for ALL engines — Piper models, chatterbox reference WAVs, anything future TTS uses.
+- Chatterbox refs moved: C:\armchair\voices → C:\armchair\Armchair\voices (muska/cochran/kerry)
+- platform_config: new base `voices_dir` property; piper_models_dir + chatterbox_ref_default
+  now default to it on ALL platforms (Windows/WSL/Linux). PIPER_MODELS_DIR env still overrides.
+- Fixes a latent bug: the Windows chatterbox ref default resolved to C:\voices\... (never
+  existed — masked by the dashboard config). agent_config.json tts_reference updated to the
+  new path; Speaker falls back to voices_dir/<basename> if a configured ref is missing.
+- Piper now actually works: en_GB-alan-medium.onnx ships in the repo voices folder (was:
+  C:\armchair\piper had no models at all).
+- .gitignore: piper .onnx/.onnx.json committed; personal *-reference.wav clones stay LOCAL
+  (voice likeness — deliberately not published; override with git add -f if ever needed).
+
+**Identity curation (voice-agent context budget).** The full agent workspace (268k chars ≈
+78k tokens) was being sent as the system prompt on EVERY utterance. Now curated by tiers:
+- T1 always: SOUL.md, IDENTITY.md, USER.md (persona core)
+- T2: PROJECTS.md, TEAM-ROSTER.md, NEXT.md + dated memory, newest-first, recent_days window
+- T3 never: TOOLS.md, DIRECTORY.md, AGENTS.md, SOCIAL-ACCOUNTS.md, HEARTBEAT.md (agent-ops
+  docs — the voice agent can't call tools, and HEARTBEAT's "stay quiet" imperatives fought
+  the persona)
+- Knobs in .env: IDENTITY_MAX_CHARS (48000 default, 0 = legacy full context),
+  IDENTITY_RECENT_DAYS (14), IDENTITY_SKIP_FILES (comma-separated extra skips)
+- Measured: 268k → 47.9k chars (82% cut), 12 recent days kept, today's notes included,
+  MEMORY.md index + one-off reviews deprioritized to last. Prompt eval ~6.5x lighter →
+  faster think leg on every utterance, cheaper cloud calls, sharper instruction-following.
+- Startup log line: `[IDENTITY] Curation: kept 21 files (47908 chars of 268092) — skipped 5
+  ops files, 48 old memory files, 7 over budget (budget 48000 chars)`
 
 ## Verified Live (2026-08-28, session 2 — production hardening)
 
