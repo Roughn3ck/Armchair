@@ -101,10 +101,10 @@ REM --- Start main pipeline (foreground - Ctrl+C stops here) ---
 echo [INFO] Starting pipeline...
 echo.
 echo ================================================================
-echo   TO STOP: Press Ctrl+C, then answer N if asked
-echo            "Terminate batch job (Y/N)?" so cleanup runs.
-echo   (Or simply close this window - the pipeline saves automatically
-echo    on shutdown, and the next start cleans up any leftovers.)
+echo   TO STOP: Press Ctrl+C, then answer N when asked
+echo            "Terminate batch job (Y/N)?" - cleanup runs and the
+echo            window closes by itself. (Answering Y also closes the
+echo            window, but skips cleanup until the next start.)
 echo ================================================================
 echo.
 "%WHISPER_PY%" "%ROOT%armchair_live.py" %*
@@ -127,4 +127,4 @@ REM Clean up audio file
 if exist "%OUTPUT_FILE%" del "%OUTPUT_FILE%" 2>nul
 
 echo [INFO] All stopped. Session archived.
-pause
+exit /b 0

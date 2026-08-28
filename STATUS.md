@@ -1,8 +1,47 @@
 # STATUS — Agent In The Armchair
 
-## Current Version: v2.6.4 (talk-mode reliability fix) — WORKING
+## Current Version: v2.7 (TTS reliability + clean console) — WORKING
 
-## Verified Live (2026-08-28)
+## Verified Live (2026-08-28, session 2 — production hardening)
+
+**Symptoms:** ~20s response latency on chatterbox; engine/voice swap to Piper generated
+nothing, swap back to chatterbox then generated nothing (and no error logged); "Mean of
+empty slice" numpy warnings on console; Ctrl+C → Y left the console window open.
+
+**Root causes + fixes (armchair_live.py):**
+- **20s latency = chatterbox cold start.** Measured on this machine: worker start + model
+  load + first gen ≈ 14-19s; warm generation ≈ 3.4s. The worker pool keeps it warm, but any
+  worker death/VRAM eviction silently cold-started inside the speak path. generate() now
+  has a hard 120s timeout (a wedged CUDA call can no longer wedge the speaker), logs the
+  real reason on every failure, hard-resets the worker after ANY failure, and retries once.
+- **"Swapped back and it didn't generate again" = dead worker + silent False.** Old
+  generate() could block forever on a dead worker's stdout (holding the pool lock) — every
+  later call queued behind it with zero log output. Fixed by the timeout + hard reset
+  above; every failure now logs `chatterbox attempt N failed: <reason>`.
+- **Piper swap generated nothing:** C:\armchair\piper\ has NO voice models (only exe+dlls),
+  so Speaker correctly warned "Voice not found" and speak() skipped. It is not a crash —
+  install a voice (e.g. en_GB-alan-medium.onnx + .onnx.json into C:\armchair\piper\) or
+  don't swap to Piper yet. _generate_piper() now also catches FileNotFoundError / timeout
+  and always logs the reason; piper path validated for existence before generation.
+- **prewarm watcher race:** prewarm called worker._start() without the pool lock — could
+  race an in-flight generate(). Now holds the worker lock.
+- **"Mean of empty slice" / TF32 warnings:** diarizer pipeline call now wrapped in
+  warnings.catch_warnings() suppression (RuntimeWarning + TF32 + degrees-of-freedom).
+  Also fixed: diarizer temp dir was hardcoded /tmp/armchair (broken on Windows-native —
+  fell back to CWD); now %TEMP%\armchair on Windows.
+
+**Console window fix (start_armchair.bat):** trailing `pause` replaced with `exit /b 0` —
+after cleanup the window closes itself. Banner updated: Ctrl+C → answer **N** → cleanup runs
+→ window closes. (Answering Y also closes the window but skips cleanup — next start
+removes any orphans. The pipeline's own shutdown stops TTS workers; the bat cleanup kills
+ffmpeg + dashboard.)
+
+**Measured (RTX 5080, live probes):** LLM think ≈ 2s (deepseek-v4-flash:cloud, full 268k
+system prompt); chatterbox warm ≈ 3.4s; cold start ≈ 14-19s; playback ≈ 1s. Expected
+talk-to-voice latency with a warm worker ≈ 6-7s. Use the dashboard ⚡Activate button to
+prewarm the engine BEFORE you need it — cold-start latency is the engine, not the pipeline.
+
+## Verified Live (2026-08-28, session 1 — talk-mode reliability)
 
 **Bug:** In Talk mode, agent name detected → LLM check returned `[SILENCE]` even when directly
 addressed ("Hey Muska, can you say hello?"). No voice, no reply. Also: identity loader dropped

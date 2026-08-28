@@ -602,7 +602,9 @@ class Diarizer:
         import soundfile as sf
         import tempfile
 
-        tmp_wav = tempfile.NamedTemporaryFile(suffix='.wav', dir='/tmp/armchair', delete=False)
+        tmp_dir = '/tmp/armchair' if os.name != 'nt' else os.path.join(os.environ.get('TEMP', r'C:\Temp'), 'armchair')
+        os.makedirs(tmp_dir, exist_ok=True)
+        tmp_wav = tempfile.NamedTemporaryFile(suffix='.wav', dir=tmp_dir, delete=False)
         tmp_wav.close()
         try:
             with wave.open(tmp_wav.name, 'wb') as wf:
@@ -614,7 +616,14 @@ class Diarizer:
             audio_data, _ = sf.read(tmp_wav.name, dtype='float32')
             waveform = torch.from_numpy(audio_data).unsqueeze(0)
 
-            result = self.pipeline({"waveform": waveform, "sample_rate": 16000})
+            # pyannote pooling emits "Mean of empty slice" / TF32 warnings on short
+            # or silent windows — harmless, but keep the production console clean
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                warnings.filterwarnings("ignore", message=".*TensorFloat-32.*")
+                warnings.filterwarnings("ignore", message=".*degrees of freedom.*")
+                result = self.pipeline({"waveform": waveform, "sample_rate": 16000})
             diarization = result.speaker_diarization
 
             # Extract all speaker segments with timestamps
@@ -869,7 +878,7 @@ class EngineWorker:
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL, text=True, bufsize=1
         )
-        # Wait for ready event
+        # Wait for ready event (models can take ~60s to load cold)
         while True:
             line = self.proc.stdout.readline()
             if not line:
@@ -896,8 +905,12 @@ class EngineWorker:
             log("TTS", f"{self.name} worker stopped")
         self.proc = None
 
-    def generate(self, text, out_path, ref=None):
+    def generate(self, text, out_path, ref=None, timeout=120):
+        """Generate speech. Bulletproof: every failure path resets the worker so the
+        NEXT call starts clean. Never returns False without a logged reason.
+        Timeout guards the whole request — a hung CUDA call can't wedge the speaker."""
         with self.lock:
+            last_err = "unknown"
             for attempt in range(2):
                 try:
                     if self.proc is None or self.proc.poll() is not None:
@@ -908,25 +921,31 @@ class EngineWorker:
                     self.proc.stdin.write(json.dumps(req) + "\n")
                     self.proc.stdin.flush()
                     resp = None
+                    deadline = time.time() + timeout
                     while resp is None:
-                        resp_line = self.proc.stdout.readline()
-                        if not resp_line:
+                        if time.time() > deadline:
+                            raise RuntimeError(f"{self.name} generation timed out after {timeout}s")
+                        line = self.proc.stdout.readline()
+                        if not line:
                             raise RuntimeError("worker closed stdout")
                         try:
-                            resp = json.loads(resp_line.strip())
+                            resp = json.loads(line.strip())
                         except json.JSONDecodeError:
-                            log("TTS", f"{self.name} non-JSON stdout: {resp_line.strip()[:120]}")
+                            log("TTS", f"{self.name} non-JSON stdout: {line.strip()[:120]}")
                     if resp.get("ok"):
                         return True
                     raise RuntimeError(resp.get("error", "unknown worker error"))
                 except Exception as e:
-                    log("TTS", f"{self.name} attempt {attempt+1} failed: {e}")
+                    last_err = str(e)
+                    log("TTS", f"{self.name} attempt {attempt+1} failed: {last_err}")
+                    # Hard reset — never reuse a worker after any failure
                     try:
                         if self.proc:
                             self.proc.kill()
                     except Exception:
                         pass
                     self.proc = None
+            log("TTS", f"{self.name} generation failed after retry: {last_err}")
             return False
 
     def stop(self):
@@ -983,15 +1002,26 @@ class Speaker:
             self.speaking = False
 
     def _generate_piper(self, text, wav_path):
-        result = subprocess.run(
-            [PIPER_BIN, "-m", self.voice_path, "-c", self.config_path,
-             "--length-scale", "0.8",
-             "-f", wav_path],
-            input=text, capture_output=True, text=True, timeout=15
-        )
-        if result.returncode != 0:
-            log("TTS", f"Piper error (rc={result.returncode}): {result.stderr[:200]}")
-        return os.path.exists(wav_path)
+        if not self.voice_path:
+            log("TTS", "Piper: no voice file available — cannot generate")
+            return False
+        try:
+            result = subprocess.run(
+                [PIPER_BIN, "-m", self.voice_path, "-c", self.config_path,
+                 "--length-scale", "0.8",
+                 "-f", wav_path],
+                input=text, capture_output=True, text=True, timeout=30
+            )
+            if result.returncode != 0:
+                log("TTS", f"Piper error (rc={result.returncode}): {result.stderr[:200]}")
+                return False
+            return os.path.exists(wav_path) and os.path.getsize(wav_path) > 0
+        except FileNotFoundError:
+            log("TTS", f"Piper binary not found: {PIPER_BIN}")
+            return False
+        except subprocess.TimeoutExpired:
+            log("TTS", "Piper timeout after 30s")
+            return False
 
     def speak(self, text, agent_name):
         if not text or len(text) < 3:
@@ -1021,8 +1051,8 @@ class Speaker:
                     return
 
             # Worker confirms ok only AFTER closing the file — but cold-start
-            # writes can lag; give it up to 15s to become visible
-            for _ in range(150):
+            # writes can lag; give it up to 10s to become visible
+            for _ in range(100):
                 if os.path.exists(wav_path) and os.path.getsize(wav_path) > 0:
                     break
                 time.sleep(0.1)
@@ -1033,8 +1063,6 @@ class Speaker:
             log("TTS", f"{agent_name}: {text[:80]}...")
             self.audio_output.play(wav_path)
 
-        except subprocess.TimeoutExpired:
-            log("TTS", "Timeout")
         except Exception as e:
             log("TTS", f"Error: {e}")
         finally:
@@ -1270,8 +1298,10 @@ def main():
                     last_seen = engine
                     log("TTS", f"Prewarming {engine} worker (background)...")
                     w = get_worker(engine)
-                    if w.proc is None or w.proc.poll() is not None:
-                        w._start()
+                    # Hold the worker lock — prewarm must not race an in-flight generate()
+                    with w.lock:
+                        if w.proc is None or w.proc.poll() is not None:
+                            w._start()
             except FileNotFoundError:
                 pass
             except Exception as e:
@@ -1441,7 +1471,7 @@ def main():
         except Exception as e:
             log("TTS", f"{_engine} worker shutdown error: {e}")
 
-    log("ARMCHAIR", "Pipeline stopped. You can close this window (or press Ctrl+C again if prompted).")
+    log("ARMCHAIR", "Pipeline stopped — window closes after cleanup.")
 
 if __name__ == "__main__":
     main()
