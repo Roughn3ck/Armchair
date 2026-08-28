@@ -248,15 +248,25 @@ def format_speaker(speaker_id, names=None):
 def _read_text(path):
     """Read a text file as UTF-8, falling back to cp1252 for legacy-encoded files.
 
-    Windows editors often save markdown with cp1252 smart quotes; a strict UTF-8
-    read raises UnicodeDecodeError and silently drops the file from context.
+    Returns None for files that aren't readable text (binary/corrupted) so callers
+    can skip them with a clear log instead of crashing or injecting garbage.
     """
-    try:
-        with open(path, 'r', encoding='utf-8') as f:
-            return f.read().strip()
-    except UnicodeDecodeError:
-        with open(path, 'r', encoding='cp1252', errors='replace') as f:
-            return f.read().strip()
+    content = None
+    for enc in ('utf-8', 'cp1252'):
+        try:
+            with open(path, 'r', encoding=enc) as f:
+                content = f.read().strip()
+            break
+        except (UnicodeDecodeError, ValueError):
+            continue
+    if content is None:
+        return None
+    # Corrupted/binary files decode via cp1252 but are mostly non-printable — reject
+    if content:
+        printable = sum(1 for ch in content if ch.isprintable() or ch in '\n\r\t')
+        if printable / len(content) < 0.95:
+            return None
+    return content
 
 
 def load_identity(identity_dir):
@@ -275,7 +285,9 @@ def load_identity(identity_dir):
         if os.path.isfile(fpath) and fname.lower().endswith(('.md', '.txt')):
             try:
                 content = _read_text(fpath)
-                if content:
+                if content is None:
+                    log("IDENTITY", f"Skipped (binary or undecodable): {fname}")
+                elif content:
                     context_parts.append(f"--- {fname} ---\n{content}")
                     log("IDENTITY", f"Loaded: {fname} ({len(content)} chars)")
             except Exception as e:
@@ -289,7 +301,9 @@ def load_identity(identity_dir):
             if os.path.isfile(fpath) and fname.lower().endswith(('.md', '.txt')):
                 try:
                     content = _read_text(fpath)
-                    if content:
+                    if content is None:
+                        log("IDENTITY", f"Skipped (binary or undecodable): memory/{fname}")
+                    elif content:
                         context_parts.append(f"--- memory/{fname} ---\n{content}")
                         log("IDENTITY", f"Loaded: memory/{fname} ({len(content)} chars)")
                 except Exception as e:

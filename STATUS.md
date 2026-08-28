@@ -22,8 +22,14 @@ prompt → correct responses, same full prompt. Model context is fine (1M ctx cl
   direct greeting/question/add → responds; third-person mention / passing mention → `[SILENCE]`.
 - Empty LLM responses now logged (`[LLM] Empty response from model — treating as silence`)
   instead of silently logging `[SILENCE]` — makes this class of failure diagnosable in the console.
-- load_identity(): `_read_text()` helper reads UTF-8 with cp1252 fallback so Windows-encoded
-  memory files load instead of being skipped with decode errors.
+- load_identity(): `_read_text()` helper — UTF-8 read with cp1252 fallback plus a
+  printability guard (>=95% printable chars) so corrupted/binary files are skipped with a
+  clear log instead of crashing or injecting garbage into the prompt. Discovered the six
+  "decode error" files (memory/2026-04-13..17, 2026-04-15-domain-dashboard.md) are not
+  mis-encoded text — they are corrupted BINARY data (file magic: random/PGP-like bytes,
+  all mtime Jul 14 06:58 — corruption event during the RAID copy). Content unrecoverable
+  from these files; loader now skips them cleanly. **They still sit in the workspace —
+  recommend deleting them or recovering the original notes from session transcripts.**
 
 Also folded in (was uncommitted in C:\armchair\Armchair since 08-27): Windows-safe PID liveness
 check (`_pid_alive`, os.kill(pid,0) kills PIDs on Windows), TTS worker `.stop()` shutdown so
