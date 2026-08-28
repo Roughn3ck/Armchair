@@ -245,6 +245,20 @@ def format_speaker(speaker_id, names=None):
     return speaker_id
 
 
+def _read_text(path):
+    """Read a text file as UTF-8, falling back to cp1252 for legacy-encoded files.
+
+    Windows editors often save markdown with cp1252 smart quotes; a strict UTF-8
+    read raises UnicodeDecodeError and silently drops the file from context.
+    """
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return f.read().strip()
+    except UnicodeDecodeError:
+        with open(path, 'r', encoding='cp1252', errors='replace') as f:
+            return f.read().strip()
+
+
 def load_identity(identity_dir):
     """Load all .md and .txt files from the Identity folder (including memory/ subfolder).
     Returns concatenated text for the LLM system prompt.
@@ -260,8 +274,7 @@ def load_identity(identity_dir):
         fpath = os.path.join(identity_dir, fname)
         if os.path.isfile(fpath) and fname.lower().endswith(('.md', '.txt')):
             try:
-                with open(fpath, 'r', encoding='utf-8') as f:
-                    content = f.read().strip()
+                content = _read_text(fpath)
                 if content:
                     context_parts.append(f"--- {fname} ---\n{content}")
                     log("IDENTITY", f"Loaded: {fname} ({len(content)} chars)")
@@ -275,8 +288,7 @@ def load_identity(identity_dir):
             fpath = os.path.join(memory_dir, fname)
             if os.path.isfile(fpath) and fname.lower().endswith(('.md', '.txt')):
                 try:
-                    with open(fpath, 'r', encoding='utf-8') as f:
-                        content = f.read().strip()
+                    content = _read_text(fpath)
                     if content:
                         context_parts.append(f"--- memory/{fname} ---\n{content}")
                         log("IDENTITY", f"Loaded: memory/{fname} ({len(content)} chars)")
@@ -684,7 +696,15 @@ class LLMClient:
 
         self.conversation.append({
             "role": "user",
-            "content": f"Recent transcript:\n{transcript}\n\nAre you being directly addressed? If so, respond. If not, respond with [SILENCE]."
+            "content": (
+                f"Recent transcript:\n{transcript}\n\n"
+                "The last line above contains your name. Decide: is the speaker talking TO you — "
+                "greeting you, asking you something, or directing words at you? Or are they just mentioning you "
+                "in passing to someone else, with no answer expected? "
+                "If they are talking TO you: respond NOW, in character, exactly as you would say it out loud in the room. "
+                "Plain text only — no markdown, no emoji, no lists. Keep it short (1-2 sentences). "
+                "If you are merely mentioned in passing: reply with exactly [SILENCE] and nothing else."
+            )
         })
 
         if len(self.conversation) > 20:
@@ -705,6 +725,7 @@ class LLMClient:
                     return None
                 self.conversation.append({"role": "assistant", "content": response_text})
                 return response_text
+            log("LLM", "Empty response from model — treating as silence")
             return None
         except Exception as e:
             log("LLM", f"Error ({self.provider}): {e}")
@@ -846,6 +867,20 @@ class EngineWorker:
             except json.JSONDecodeError:
                 continue
         log("TTS", f"{self.name} worker ready")
+
+    def stop(self):
+        """Shut the worker down cleanly (close stdin, wait for exit)."""
+        if self.proc and self.proc.poll() is None:
+            try:
+                self.proc.stdin.close()  # worker exits on EOF
+                self.proc.wait(timeout=10)
+            except Exception:
+                try:
+                    self.proc.kill()
+                except Exception:
+                    pass
+            log("TTS", f"{self.name} worker stopped")
+        self.proc = None
 
     def generate(self, text, out_path, ref=None):
         with self.lock:
@@ -999,6 +1034,42 @@ class Speaker:
 # ============================================================
 # MAIN PIPELINE
 # ============================================================
+def _pid_alive(pid):
+    """Check whether a PID is alive — cross-platform and side-effect free.
+
+    NOTE: os.kill(pid, 0) CANNOT be used on Windows — it actually terminates
+    the process (TerminateProcess under the hood) and raises WinError 87 on
+    dead PIDs. Use OpenProcess/GetExitCodeProcess there instead.
+    """
+    if not pid or pid <= 0:
+        return False
+    try:
+        if os.name == 'nt':
+            import ctypes
+            from ctypes import wintypes
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            STILL_ACTIVE = 259
+            k32 = ctypes.windll.kernel32
+            h = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+            if not h:
+                return False
+            try:
+                code = wintypes.DWORD()
+                ok = k32.GetExitCodeProcess(h, ctypes.byref(code))
+                return bool(ok) and code.value == STILL_ACTIVE
+            finally:
+                k32.CloseHandle(h)
+        else:
+            os.kill(pid, 0)  # POSIX: signal 0 is a true existence check
+            return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists but owned by another user (POSIX)
+    except OSError:
+        return False
+
+
 def main():
     import subprocess
 
@@ -1027,14 +1098,12 @@ def main():
             with open(lock_path) as f:
                 old_pid = int(f.read().strip() or 0)
             if old_pid and old_pid != os.getpid():
-                try:
-                    os.kill(old_pid, 0)  # signal 0 = existence check only
+                if _pid_alive(old_pid):
                     print(f"[LOCK] Another Armchair pipeline is already running (PID {old_pid}).")
                     print("       Close it first (Ctrl+C in its window), or delete:")
                     print(f"       {lock_path}")
                     sys.exit(1)
-                except (ProcessLookupError, PermissionError):
-                    pass  # stale lock, process is gone — take over
+                # stale lock, process is gone — take over
         with open(lock_path, 'w') as f:
             f.write(str(os.getpid()))
     except ValueError:
@@ -1097,15 +1166,21 @@ def main():
     identity_context = load_identity(IDENTITY_DIR)
     memory_dir = agent_config.get('memory_dir', '').strip()
     # Normalize Windows-style paths (B:\foo\bar) to WSL (/mnt/b/foo/bar)
-    if memory_dir and ':' in memory_dir[:3]:
+    # WSL bridge ONLY — Windows-native and Linux-native use the path as-is
+    if _pf.name == 'wsl' and memory_dir and ':' in memory_dir[:3]:
         drive, rest = memory_dir.split(':', 1)
         memory_dir = f"/mnt/{drive.lower().strip()}{rest.replace('\\', '/')}"
         log("IDENTITY", f"Normalized memory dir to: {memory_dir}")
-    if memory_dir and os.path.isdir(memory_dir):
-        extra_context = load_identity(memory_dir)
-        if extra_context:
-            identity_context = (identity_context + "\n\n" + extra_context).strip()
-            log("IDENTITY", f"Merged custom memory directory: {memory_dir}")
+    if memory_dir:
+        if os.path.isdir(memory_dir):
+            extra_context = load_identity(memory_dir)
+            if extra_context:
+                identity_context = (identity_context + "\n\n" + extra_context).strip()
+                log("IDENTITY", f"Merged custom memory directory: {memory_dir}")
+            else:
+                log("IDENTITY", f"Memory dir contains no .md/.txt content: {memory_dir}")
+        else:
+            log("IDENTITY", f"WARNING: memory dir not found, skipping: {memory_dir}")
 
     if not os.path.exists(MODE_FILE):
         with open(MODE_FILE, 'w') as f:
@@ -1344,8 +1419,15 @@ def main():
             pass
 
     log("SESSION", f"Session ended: {session_dir}")
-    log("ARMCHAIR", "Pipeline stopped.")
 
+    # Stop persistent TTS workers (they hold GPU/VRAM — never orphan them)
+    for _engine, _w in _WORKER_POOL.items():
+        try:
+            _w.stop()
+        except Exception as e:
+            log("TTS", f"{_engine} worker shutdown error: {e}")
+
+    log("ARMCHAIR", "Pipeline stopped. You can close this window (or press Ctrl+C again if prompted).")
 
 if __name__ == "__main__":
     main()

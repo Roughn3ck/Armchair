@@ -61,6 +61,11 @@ echo   Agent In The Armchair - Executive Mind v2.6
 echo ================================================
 echo.
 
+REM --- Kill any stale Armchair processes (prevents double-pipeline zombies) ---
+REM (Must run BEFORE capture start, or it kills the fresh ffmpeg)
+powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object { $_.CommandLine -like '*armchair_live.py*' -or $_.CommandLine -like '*dashboard_server.py*' -or $_.CommandLine -like '*chatterbox_worker.py*' -or $_.CommandLine -like '*kokoro_worker.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
+taskkill /f /im ffmpeg.exe >nul 2>&1
+
 REM --- Delete old capture file ---
 if exist "%OUTPUT_FILE%" del "%OUTPUT_FILE%"
 
@@ -75,10 +80,6 @@ start /b "" "%FFMPEG%" -y ^
 
 REM --- Wait for audio file to appear ---
 timeout /t 2 /nobreak >nul
-
-REM --- Kill any stale Armchair processes (prevents double-pipeline zombies) ---
-powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object { $_.CommandLine -like '*armchair_live.py*' -or $_.CommandLine -like '*dashboard_server.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
-taskkill /f /im ffmpeg.exe >nul 2>&1
 
 REM --- Start dashboard server (background, no window) ---
 echo [INFO] Starting dashboard on http://localhost:8765 ...
@@ -98,7 +99,13 @@ start http://localhost:8765
 
 REM --- Start main pipeline (foreground - Ctrl+C stops here) ---
 echo [INFO] Starting pipeline...
-echo [INFO] Press Ctrl+C to stop (session saves automatically)
+echo.
+echo ================================================================
+echo   TO STOP: Press Ctrl+C, then answer N if asked
+echo            "Terminate batch job (Y/N)?" so cleanup runs.
+echo   (Or simply close this window - the pipeline saves automatically
+echo    on shutdown, and the next start cleans up any leftovers.)
+echo ================================================================
 echo.
 "%WHISPER_PY%" "%ROOT%armchair_live.py" %*
 
@@ -108,14 +115,13 @@ REM ============================================================
 echo.
 echo [INFO] Stopping all components...
 
-REM Kill ffmpeg (audio capture)
+REM Kill ffmpeg (audio capture) and any TTS workers
 taskkill /f /im ffmpeg.exe >nul 2>&1
+powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object { $_.CommandLine -like '*chatterbox_worker.py*' -or $_.CommandLine -like '*kokoro_worker.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
 
 REM Kill dashboard server
-REM Find the python process running dashboard_server.py and kill it
-for /f "tokens=2" %%p in ('wmic process where "commandline like %%dashboard_server.py%%" get processid /value 2^>nul ^| findstr processid') do (
-    taskkill /f /pid %%p >nul 2>&1
-)
+REM (wmic is deprecated/removed on Win11 24H2+ - use PowerShell CIM)
+powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object { $_.CommandLine -like '*dashboard_server.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
 
 REM Clean up audio file
 if exist "%OUTPUT_FILE%" del "%OUTPUT_FILE%" 2>nul

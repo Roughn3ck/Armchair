@@ -1,6 +1,34 @@
 # STATUS — Agent In The Armchair
 
-## Current Version: v2.1 (multi-engine TTS) — WORKING
+## Current Version: v2.6.4 (talk-mode reliability fix) — WORKING
+
+## Verified Live (2026-08-28)
+
+**Bug:** In Talk mode, agent name detected → LLM check returned `[SILENCE]` even when directly
+addressed ("Hey Muska, can you say hello?"). No voice, no reply. Also: identity loader dropped
+memory files saved with cp1252 encoding (`'utf-8' codec can't decode byte 0x99/0x94/...`).
+
+**Root cause:** The think() prompt asked the model to self-classify — "Are you being directly
+addressed? If not, respond with [SILENCE]" — a weak, silence-biased instruction that collapses
+when the system prompt carries the full ~268k-char identity/memory context (78k tokens).
+Reproduced against deepseek-v4-flash:cloud: old prompt → deterministic `[SILENCE]`; reworded
+prompt → correct responses, same full prompt. Model context is fine (1M ctx cloud model,
+78k-token prompt evaluated server-side) — the failure was prompt design, not truncation.
+
+**Fixes (armchair_live.py):**
+- think() user prompt reworded to a neutral two-branch decision: respond now if spoken TO
+  (greeting/question/direct address), reply exactly `[SILENCE]` only when mentioned in passing.
+  Validated 5/5 against the live model with the full production system prompt:
+  direct greeting/question/add → responds; third-person mention / passing mention → `[SILENCE]`.
+- Empty LLM responses now logged (`[LLM] Empty response from model — treating as silence`)
+  instead of silently logging `[SILENCE]` — makes this class of failure diagnosable in the console.
+- load_identity(): `_read_text()` helper reads UTF-8 with cp1252 fallback so Windows-encoded
+  memory files load instead of being skipped with decode errors.
+
+Also folded in (was uncommitted in C:\armchair\Armchair since 08-27): Windows-safe PID liveness
+check (`_pid_alive`, os.kill(pid,0) kills PIDs on Windows), TTS worker `.stop()` shutdown so
+workers never orphan and hold VRAM, WSL-only memory-dir path bridging, start_armchair.bat
+stale-process cleanup ordering + Win11 24H2 wmic→CIM fix.
 
 ## Build Status
 
