@@ -55,7 +55,7 @@ No  → [SILENCE] — agent stays quiet
 | `tts_workers/` | Persistent TTS engine workers (kokoro, chatterbox) — isolated venvs, JSON-over-stdin |
 | `stream_to_file.bat` | Windows ffmpeg audio capture (meeting audio + mic) |
 | `start_armchair.bat` | One-click launcher (audio + dashboard + pipeline + browser) |
-| `setup_audio.bat` | Audio routing setup guide |
+| `setup_audio.bat` | Audio routing setup guide (three-listener matrix) |
 | `voices/` | Sample voice files (British + American) with README |
 | `requirements.txt` | Python dependencies |
 | `STATUS.md` | Full architecture history and component docs |
@@ -137,39 +137,80 @@ Without this the agent still runs — you just get `[UNKNOWN]` instead of named 
 
 **Ollama (for Talk mode):** Running on localhost:11434
 
-### Audio Routing (One-Time)
+### Audio Routing (One-Time) — v2: The Three-Listener Matrix
 
 ![The Voicemeeter Mess](assets/voicemeeter-mess.jpg)
 
-*Yes, audio routing is a mess. Here's how to tame it.*
+*Yes, audio routing is a mess. The matrix tames it: every Voicemeeter bus is one listener's ears.*
 
-Run `setup_audio.ps1` to automate most of this, or follow the manual steps below.
+There are three listeners, and each hears a different mix. The merge happens at the buses —
+each strip routes to any combination of A1/B1/B2, and each bus is one listener's personal mix:
 
-#### Option A — Voicemeeter Banana (recommended, full control)
+| Listener | Hears | Never hears |
+|---|---|---|
+| **You** (A1 → speakers) | agent TTS + remote caller | your own voice |
+| **Agent / pipeline** (B1 → `Voicemeeter Output` recording device) | you + remote caller | its own TTS |
+| **Remote caller** (B2 → `Voicemeeter AUX Output` recording device) | you + agent TTS | their own voice |
 
-The verified-working configuration for calls (e.g. Signal):
+**No Windows "Listen to this device" anywhere.** Listen re-plays audio through a second,
+delayed path — a delayed duplicate of audio Voicemeeter already routes is an echo, and with
+mic side-tone it becomes a regenerative loop. Voicemeeter's buses are the only router.
 
-| Element | Setting |
-|---------|---------|
-| Hardware Input 1 (your mic) | → **A1** + **B1**, mono |
-| CABLE-A Output strip | → **A1** + **B1** |
-| A1 output device | Your speakers/headphones |
-| B1 | Virtual — this is what the call app sees as "mic" |
+Run `setup_audio.ps1` to verify devices + set defaults, or `setup_audio.bat` for the full
+guided walkthrough.
 
-Then in your call app:
-- **Microphone:** `Voicemeeter Output (VB-Audio Voicemeeter VAIO)` (= B1)
-- **Speaker:** your normal speakers/headphones
+#### Voicemeeter strip layout (validated 2026-09-05)
 
-And in Windows Sound settings:
-- **Default playback device:** `CABLE-A Input` — critical. TTS rides into B1 through this.
+| Strip | Source | A1 (you) | B1 (agent) | B2 (caller) |
+|-------|--------|:---:|:---:|:---:|
+| Hardware in 1 | Jabra PanaCast mic (+ **Mono**) | off | **ON** | **ON** |
+| Hardware in 2 | CABLE-A Output | **ON** | off | **ON** |
+| Hardware in 3 | — | | | |
+| Virtual in (VAIO) | Voicemeeter Input | **ON** | **ON** | off |
+| Virtual in (AUX VAIO) | Voicemeeter AUX Input | spare | | |
 
-Signal flow: your mic and the agent's TTS both land on B1 (the caller hears both); A1 lets you hear everything locally.
+Strip numbers shown for Voicemeeter standard; on Banana the VAIO / AUX VAIO strips are 6/7
+and the device names are identical.
 
-#### Option B — No Voicemeeter (simpler, listen-only + TTS)
-1. Run `setup_audio.bat` for a guided walkthrough
-2. Set Windows default playback → CABLE-A Input
-3. Enable "Listen to this device" on CABLE-A Output → your stereo speakers
-4. Call app mic → your normal microphone
+#### Windows + call-app settings
+
+| Setting | Value |
+|---|---|
+| Windows default playback | `CABLE-A Input` — TTS plays here, arrives on the CABLE-A Output strip |
+| Windows default recording | `Voicemeeter Output` (B1) |
+| Call app microphone | `Voicemeeter AUX Output` (**B2**) — explicit, not "System default" |
+| Call app speaker | `Voicemeeter Input` (VAIO) — explicit, not "System default" |
+| "Listen to this device" | **UNCHECKED on every recording device** |
+
+#### The two red lines
+
+1. **Remote caller audio never reaches B2.** The VAIO strip stays A1+B1 only — route it to
+   B2 and the caller hears their own voice back.
+2. **Agent TTS never reaches B1.** The CABLE-A Output strip stays A1+B2 only — route it to
+   B1 and the agent transcribes its own TTS (self-loop).
+
+Keep the call app's mic and speaker inside the app (as above) so its built-in echo
+cancellation has its reference, and keep speaker volume sane — speakers bleeding into the
+PanaCast is the one loop physics still allows.
+
+#### Signal flow (Talk mode)
+
+TTS → PowerShell → default playback (`CABLE-A Input`) → CABLE-A Output strip → A1 (you) +
+B2 (caller). Your mic → strip 1 → B1 (agent) + B2 (caller). The remote caller → call-app
+speaker (`Voicemeeter Input`) → VAIO strip → A1 (you) + B1 (agent).
+
+> ⚠️ **Pipeline capture:** `stream_to_file.bat` still captures `CABLE-A Output` + mic via
+> amix (pre-matrix behavior). Under the matrix the remote caller arrives on B1, so the
+> capture must repoint to `Voicemeeter Output` (single device: mic + caller, no TTS
+> self-hear) — required for Talk mode on this routing. Tracked in STATUS.md, pending live
+> test.
+
+#### No-Voicemeeter fallback (Listen mode only)
+
+Listen-only (no Talk mode) works without Voicemeeter: call-app speaker → `CABLE-A Input`,
+ffmpeg captures `CABLE-A Output`, enable "Listen to this device" on `CABLE-A Output` → your
+speakers so you hear the meeting, call-app mic → your normal microphone. **Do not use this
+path with Talk mode** — the TTS self-hears through the capture and loops. Use the matrix.
 
 ### Running the Pipeline
 

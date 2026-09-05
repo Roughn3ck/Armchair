@@ -2,6 +2,47 @@
 
 ## Current Version: v2.8 (single voices dir + identity curation) — WORKING
 
+## Verified Live (2026-09-05 — audio routing v2: three-listener matrix, echo killed)
+
+**Symptoms:** echo from mic to speakers that repeated and looped, appearing after the
+CABLE-A Listen target was repointed. Never present in the pre-Voicemeeter setup.
+
+**Root cause (two paths, one loop):**
+1. Windows "Listen to this device" on CABLE-A Output re-played the same audio Voicemeeter
+   strip 2 already captured directly — a delayed (~150ms) duplicate of every sound on the
+   cable = the echo.
+2. Mic side-tone: mic strip routed to A1 (speakers). A speakerphone mic (PanaCast) hearing
+   its own delayed voice from the speakers re-feeds the input — the duplicate sustained it
+   into a regenerative loop.
+
+**Fix — the three-listener matrix (validated live this session, no pipeline code changes):**
+- Buses = ears. A1 = local speakers; B1 = `Voicemeeter Output` recording device = agent /
+  pipeline feed; B2 = `Voicemeeter AUX Output` recording device = call-app mic (remote caller).
+- Strips: mic → B1+B2 (+Mono, no A1); CABLE-A Output (TTS) → A1+B2 (no B1); VAIO
+  (call-app speaker) → A1+B1 (no B2); AUX VAIO spare.
+- "Listen to this device" UNCHECKED on every recording device — Voicemeeter buses are the
+  only router.
+- Call app: mic = `Voicemeeter AUX Output` (B2), speaker = `Voicemeeter Input` (VAIO) —
+  explicit, not system default.
+- Who hears whom: you = agent + caller; agent = you + caller; caller = you + agent.
+  Red lines: caller audio never → B2 (remote echo); agent TTS never → B1 (agent self-loop);
+  mic never → A1 (speaker feedback).
+- Result: zero echo, clean transcription, agent TTS audible locally, simpler Voicemeeter
+  surface (one source per strip, strip 3 empty), no Windows Listen.
+
+**Docs/scripts updated to v2 routing (this commit):** README audio section replaced
+(matrix + red lines + Listen-mode-only fallback), STATUS verified-live + build-status rows,
+setup_audio.bat/.ps1 rewritten to guide the matrix (Listen must be OFF), install.bat
+next-steps + Voicemeeter-required-for-Talk-mode note.
+
+**Pending (tracked, not in this change):**
+- Third-party call test — confirm the remote caller hears both the local user and the agent
+  on B2. Matrix verified internally only until then.
+- **stream_to_file.bat capture repoint (REQUIRED for Talk mode on the matrix):** the caller
+  now arrives on B1, not CABLE-A Output; capture must move to `Voicemeeter Output
+  (VB-Audio Voicemeeter VAIO)` as a single device (mic + caller, no TTS self-hear). Needs a
+  live test before the swap — pipeline code, separate change.
+
 ## Verified Live (2026-08-28, session 3 — voices + curation)
 
 **Single voices folder.** `C:\armchair\Armchair\voices\` (repo-local) is now the one voices
@@ -122,7 +163,8 @@ stale-process cleanup ordering + Win11 24H2 wmic→CIM fix.
 | **Dashboard** | ✅ Working | Speaker naming, agent config, engine select + Activate, mode toggle |
 | **Session Management** | ✅ Working | Timestamped folders, clean start/stop, archives transcript + audio |
 | **One-Click Launcher** | ✅ Working | start_armchair.bat |
-| **Mic Capture** | ✅ Working | ffmpeg amix (meeting audio + Jabra Panacast) |
+| **Mic Capture** | ✅ Working | ffmpeg amix (meeting audio + Jabra Panacast) — capture repoint to Voicemeeter Output (B1) pending (see 2026-09-05 entry) |
+| **Audio Routing (three-listener matrix)** | ✅ Working (internal) | A1/B1/B2 buses, no Windows Listen — remote-caller test pending |
 
 ---
 
@@ -191,7 +233,7 @@ stale-process cleanup ordering + Win11 24H2 wmic→CIM fix.
 - [ ] Bump rolling buffer 16→24s for more diarization context
 
 ### v2.9 — Polish & Hardening
-- [ ] Echo suppression (TTS self-hear via audio loop)
+- [x] Echo suppression — resolved by routing matrix (2026-09-05): TTS can no longer reach the capture bus
 - [ ] Error recovery (auto-restart failed workers, graceful degradation)
 - [ ] Config validation on startup (missing venvs, bad paths, etc.)
 - [ ] Logging to file with rotation
@@ -369,12 +411,19 @@ A: Provider-agnostic LLMClient with dropdown: Ollama / OpenAI / Anthropic / Toke
 
 ## Audio Routing
 
+v2 — three-listener matrix (2026-09-05, see Verified Live entry at top). Every Voicemeeter
+bus is one listener's ears: A1 = local speakers (you), B1 = `Voicemeeter Output` recording
+device (agent/pipeline feed), B2 = `Voicemeeter AUX Output` recording device (call-app mic,
+remote caller). No Windows "Listen to this device" anywhere — that was the echo loop.
+
 ```
-Teams speaker → CABLE-A Input (Windows default playback)
-CABLE-A Output → "Listen to this device" → stereo speakers
-ffmpeg captures CABLE-A Output + Jabra Panacast mic → amix → B:\armchair_audio.raw
-Agent TTS → PowerShell PlaySync → CABLE-A Input → CABLE-A Output → meeting + speakers
+You (Jabra PanaCast mic) → strip 1 → B1 (agent) + B2 (caller)
+Agent TTS → PowerShell PlaySync → CABLE-A Input (default playback) → CABLE-A Output → strip 2 → A1 (you) + B2 (caller)
+Remote caller → call-app speaker (Voicemeeter Input) → VAIO strip → A1 (you) + B1 (agent)
+ffmpeg capture (pre-matrix; repoint to B1 pending) → amix CABLE-A Output + PanaCast mic → B:\armchair_audio.raw
 ```
+
+Red lines: caller audio never → B2 (remote echo); agent TTS never → B1 (agent self-loop); mic never → A1 (speaker feedback).
 
 ## Environment
 
@@ -398,7 +447,7 @@ Agent TTS → PowerShell PlaySync → CABLE-A Input → CABLE-A Output → meeti
 ## Known Issues
 
 1. **Speaker recognition weak** — generic clustering mislabels/mixes speakers. Plan (v2.8): pyannote speaker enrollment.
-2. **TTS echo** — agent's TTS picked up by mic capture (CABLE-A loop). Name-gate mostly handles it; echo suppression still needed.
+2. **TTS echo** — agent's TTS picked up by mic capture (CABLE-A loop). Name-gate mostly handles it; routing matrix (2026-09-05) kills it once capture repoints to Voicemeeter B1 — TTS can no longer reach the capture bus (pending).
 3. **LLM latency** — ~1-2s for deepseek-v4-flash. Could be faster with a smaller model.
 4. **Diarization on short utterances** — rapid speaker switches are hard. Real meetings are easier.
 5. **GPU load** — Whisper + pyannote + parked TTS workers all share CUDA. Monitor VRAM when both engines activated.

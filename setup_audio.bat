@@ -1,91 +1,112 @@
 @echo off
 REM setup_audio.bat - Configure Windows audio routing for Agent In The Armchair
+REM v2: THREE-LISTENER MATRIX - replaces the old "Listen to this device" setup (it echoed)
 REM Run this BEFORE starting your call app (Teams, Zoom, Signal, Meet...) + Armchair pipeline
 REM
-REM This is a GUIDE - it walks you through the manual Windows settings.
-REM No audio device changes are automated (safer than scripting nircmd).
+REM This is a GUIDE - it walks you through the manual Windows/Voicemeeter settings.
+REM No audio device changes are automated.
 
 echo ================================================
-echo AGENT IN THE ARMCHAIR - AUDIO SETUP
+echo AGENT IN THE ARMCHAIR - AUDIO SETUP (v2 MATRIX)
 echo ================================================
 echo.
-echo This sets up ONE-WAY audio capture (listen only, no TTS):
-echo   Call app audio (Teams, Zoom, Signal, Meet... - whichever you use) ^> CABLE-A Input ^> CABLE-A Output ^> ffmpeg ^> armchair_audio.raw
-echo   You hear the meeting through your stereo speakers (via Listen tab)
-echo   Your call app mic stays on your normal microphone (unchanged)
+echo THREE LISTENERS - every Voicemeeter bus is one listener's ears:
+echo   A1  speakers                      = YOU (agent TTS + remote caller)
+echo   B1  "Voicemeeter Output" rec dev  = AGENT/PIPELINE (you + remote caller)
+echo   B2  "Voicemeeter AUX Output" rec  = REMOTE CALLER (you + agent TTS)
+echo.
+echo RULE: No Windows "Listen to this device" anywhere. Voicemeeter does all routing.
+echo   (Old setup had Listen ON - it is a delayed duplicate of audio Voicemeeter
+echo    already routes. That was the echo. UNCHECK IT.)
 echo.
 echo ================================================
 echo.
-echo STEP 1: Set Your Call App Speaker to CABLE-A Input
+echo STEP 1: Windows Sound settings
 echo.
-echo   Open your communication app (Teams, Zoom, Signal, Meet - whichever you use)
-echo   Settings ^> Audio / Devices
-echo   Speaker: "CABLE-A Input (VB-Audio Virtual Cable A)"
-echo   Microphone: "Jabra PanaCast 20" (keep as-is)
+echo   Playback devices: set DEFAULT to "CABLE-A Input (VB-Audio Virtual Cable A)"
+echo     (the agent's TTS plays here - it arrives on Voicemeeter's CABLE-A Output strip)
+echo   Recording devices: set DEFAULT to "Voicemeeter Output (VB-Audio Voicemeeter VAIO)"
+echo   Recording devices: on EACH device, Properties, Listen tab:
+echo     "Listen to this device" must be UNCHECKED on ALL of them
+echo.
+echo ================================================
+echo.
+echo STEP 2: Voicemeeter - one source per strip, route by bus
+echo.
+echo   Bus A1 output device: your speakers/headphones
+echo   Strip 1: Microphone (Jabra PanaCast)  - B1 + B2 ON, A1 OFF, MONO ON
+echo   Strip 2: CABLE-A Output               - A1 + B2 ON, B1 OFF
+echo   Strip 3: (empty)
+echo   Strip 4: Voicemeeter Input (VAIO)     - A1 + B1 ON, B2 OFF
+echo   Strip 5: Voicemeeter AUX Input        - spare
+echo.
+echo   RED LINES (break these and you get echo):
+echo     - VAIO strip NEVER to B2           - or the remote caller hears themselves
+echo     - CABLE-A Output strip NEVER to B1 - or the agent transcribes its own TTS
+echo     - Mic strip NEVER to A1            - or your mic loops through the speakers
+echo.
+echo ================================================
+echo.
+echo STEP 3: Call app settings (explicit devices, not "System default")
+echo.
+echo   Open your call app (Teams, Zoom, Signal, Meet - whichever you use)
+echo   Settings, Audio / Devices
+echo   Microphone: "Voicemeeter AUX Output (VB-Audio Voicemeeter AUX VAIO)"
+echo   Speaker:    "Voicemeeter Input (VB-Audio Voicemeeter VAIO)"
 echo   Noise suppression: Off or Low (let Whisper handle it)
 echo.
 echo ================================================
 echo.
-echo STEP 2: Enable "Listen" on CABLE-A Output so you hear the meeting
-echo.
-echo   Right-click speaker icon in taskbar ^> Sound Settings
-echo   ^> More sound settings (Control Panel)
-echo   ^> Playback tab ^> select your stereo speakers ^> Set Default
-echo   ^> Recording tab ^> find "CABLE-A Output" ^> Properties
-echo   ^> Listen tab
-echo   ^> Check "Listen to this device"
-echo   ^> Playback through: select your stereo speakers
-echo   ^> Apply ^> OK
-echo.
-echo Now: Your call app plays to CABLE-A Input, ffmpeg captures CABLE-A Output,
-echo   and you hear everything through your stereo speakers.
-echo.
-echo ================================================
-echo.
-echo STEP 3: Verify VB-Cable A is installed
+echo STEP 4: Verify VB-Cable + Voicemeeter are installed
 echo.
 
-REM Check if CABLE-A Output exists as a capture device
 C:\Users\krisr\Documents\ffmpeg\ffmpeg.exe -list_devices true -f dshow -i dummy 2>&1 | findstr /C:"CABLE-A Output" >nul
 if %errorlevel%==0 (
     echo [OK] CABLE-A Output detected - VB-Audio Virtual Cable A is installed
 ) else (
     echo [WARNING] CABLE-A Output not found!
     echo Download VB-Audio Virtual Cable from https://vb-audio.com/Cable/
-    echo Install and restart before running the pipeline.
+)
+
+C:\Users\krisr\Documents\ffmpeg\ffmpeg.exe -list_devices true -f dshow -i dummy 2>&1 | findstr /C:"Voicemeeter Output" >nul
+if %errorlevel%==0 (
+    echo [OK] Voicemeeter detected
+) else (
+    echo [WARNING] Voicemeeter not found - REQUIRED for Talk mode (the matrix).
+    echo Download from https://vb-audio.com/voicemeeter/
 )
 
 echo.
 echo ================================================
 echo.
-echo STEP 4: Test capture (5 seconds)
+echo STEP 5: Test the pipeline feed (5 seconds) - records bus B1
+echo.
+echo   SPEAK INTO YOUR MIC while this runs. The file must not be empty.
 echo.
 
-C:\Users\krisr\Documents\ffmpeg\ffmpeg.exe -y -f dshow -i "audio=CABLE-A Output (VB-Audio Virtual Cable A)" -ac 1 -ar 16000 -sample_fmt s16 -t 5 B:\armchair_test.raw 2>nul
+C:\Users\krisr\Documents\ffmpeg\ffmpeg.exe -y -f dshow -i "audio=Voicemeeter Output (VB-Audio Voicemeeter VAIO)" -ac 1 -ar 16000 -sample_fmt s16 -t 5 B:\armchair_test.raw 2>nul
 
 if exist B:\armchair_test.raw (
     for %%A in (B:\armchair_test.raw) do echo Test capture: %%~zA bytes
     if %%~zA GTR 0 (
-        echo [OK] Audio capture is working!
+        echo [OK] Mic is reaching B1 - the agent/pipeline feed is live.
     ) else (
-        echo [WARNING] Capture file is empty. Play some audio and try again.
+        echo [WARNING] Capture file is empty. Check:
+        echo   - Voicemeeter is running
+        echo   - Strip 1 (mic) has B1 ON and you spoke during the test
     )
     del B:\armchair_test.raw
 ) else (
     echo [WARNING] No audio captured. Check:
-    echo   - CABLE-A Output exists
-    echo   - Your call app is playing audio through CABLE-A Input
-    echo   - "Listen to this device" is enabled on CABLE-A Output
+    echo   - "Voicemeeter Output" exists as a recording device (Voicemeeter installed)
+    echo   - Voicemeeter is running - B1 is its bus
 )
 
 echo.
 echo Ready to start the pipeline?
-echo   1. Run stream_to_file.bat (Windows - captures audio)
-echo   2. Run: python3 armchair_live.py (WSL - transcribes)
-echo   3. Open http://localhost:8765 (dashboard)
+echo   1. Run start_armchair.bat (audio + dashboard + pipeline + browser)
+echo   2. Talk mode: see the capture-repoint note in STATUS.md (pending live test)
 echo.
-pause
-
 pause
 
 exit /b 0

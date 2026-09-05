@@ -2,7 +2,7 @@
 REM ============================================================
 REM  Agent In The Armchair - Windows Installer
 REM  Run this once after cloning the repo.
-REM  Creates venvs, installs deps, downloads Piper, VB-Cable.
+REM  Creates venvs, installs deps, downloads Piper, VB-Cable (+ Voicemeeter note).
 REM ============================================================
 
 setlocal enabledelayedexpansion
@@ -214,6 +214,10 @@ if not errorlevel 1 (
     )
 )
 
+echo.
+echo   [NOTE] Talk mode also needs Voicemeeter (free): https://vb-audio.com/voicemeeter/
+echo          After install, run setup_audio.bat - it walks the three-listener matrix.
+
 REM ============================================================
 REM  Done
 REM ============================================================
@@ -224,7 +228,8 @@ echo ========================================
 echo.
 echo   Next steps:
 echo   1. Edit .env to add your LLM API keys if not using Ollama
-echo   2. Run setup_audio.ps1 to configure audio routing
+echo   2. Run setup_audio.ps1 (auto) or setup_audio.bat (guided walkthrough) -
+echo      audio routing v2 = three-listener Voicemeeter matrix (no Windows "Listen")
 echo   3. Run start_armchair.bat (opens the Piper voices page on first run)
 echo.
 echo   See README.md for full setup guide.
