@@ -23,15 +23,10 @@ REM --- Audio config ---
 set "OUTPUT_FILE=%PARENT%\armchair_audio.raw"
 set "FFMPEG=C:\Users\krisr\Documents\ffmpeg\ffmpeg.exe"
 if defined FFMPEG_PATH set "FFMPEG=%FFMPEG_PATH%"
-if defined ARMCHAIR_CABLE_DEVICE (
-    set "CABLE_DEVICE=%ARMCHAIR_CABLE_DEVICE%"
+if defined ARMCHAIR_CAPTURE_DEVICE (
+    set "CAPTURE_DEVICE=%ARMCHAIR_CAPTURE_DEVICE%"
 ) else (
-    set "CABLE_DEVICE=CABLE-A Output (VB-Audio Virtual Cable A)"
-)
-if defined ARMCHAIR_MIC_DEVICE (
-    set "MIC_DEVICE=%ARMCHAIR_MIC_DEVICE%"
-) else (
-    set "MIC_DEVICE=Microphone (Jabra PanaCast 20)"
+    set "CAPTURE_DEVICE=Voicemeeter Out B1 (VB-Audio Voicemeeter VAIO)"
 )
 
 REM --- Piper voices check: repo ships starter voices; open catalog only if none exist ---
@@ -72,10 +67,7 @@ if exist "%OUTPUT_FILE%" del "%OUTPUT_FILE%"
 REM --- Start audio capture (background, no window) ---
 echo [INFO] Starting audio capture...
 start /b "" "%FFMPEG%" -y ^
-  -f dshow -i "audio=%CABLE_DEVICE%" ^
-  -f dshow -i "audio=%MIC_DEVICE%" ^
-  -filter_complex "[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=0[a]" ^
-  -map "[a]" ^
+  -f dshow -i "audio=%CAPTURE_DEVICE%" ^
   -ac 1 -ar 16000 -sample_fmt s16 -f s16le "%OUTPUT_FILE%" >nul 2>&1
 
 REM --- Wait for audio file to appear ---

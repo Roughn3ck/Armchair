@@ -53,7 +53,7 @@ No  → [SILENCE] — agent stays quiet
 | `dashboard_server.py` | HTTP server for live dashboard + API |
 | `dashboard.html` | Web dashboard with speaker naming, agent config, TTS engine select, mode toggle |
 | `tts_workers/` | Persistent TTS engine workers (kokoro, chatterbox) — isolated venvs, JSON-over-stdin |
-| `stream_to_file.bat` | Windows ffmpeg audio capture (meeting audio + mic) |
+| `stream_to_file.bat` | Windows ffmpeg audio capture (Voicemeeter B1: mic + caller) |
 | `start_armchair.bat` | One-click launcher (audio + dashboard + pipeline + browser) |
 | `setup_audio.bat` | Audio routing setup guide (three-listener matrix) |
 | `voices/` | Sample voice files (British + American) with README |
@@ -199,11 +199,11 @@ TTS → PowerShell → default playback (`CABLE-A Input`) → CABLE-A Output str
 B2 (caller). Your mic → strip 1 → B1 (agent) + B2 (caller). The remote caller → call-app
 speaker (`Voicemeeter Input`) → VAIO strip → A1 (you) + B1 (agent).
 
-> ⚠️ **Pipeline capture:** `stream_to_file.bat` still captures `CABLE-A Output` + mic via
-> amix (pre-matrix behavior). Under the matrix the remote caller arrives on B1, so the
-> capture must repoint to `Voicemeeter Output` (single device: mic + caller, no TTS
-> self-hear) — required for Talk mode on this routing. Tracked in STATUS.md, pending live
-> test.
+> ✅ **Pipeline capture (repointed 2026-09-07):** capture is a single device — `Voicemeeter
+> Out B1 (VB-Audio Voicemeeter VAIO)` (mic + caller, no TTS self-hear) — in both
+> `start_armchair.bat` and `stream_to_file.bat`. Verified live pre-swap: 3s B1 dshow
+> capture, exact byte math. The `ARMCHAIR_CAPTURE_DEVICE` env var overrides the device
+> (replaces the old `ARMCHAIR_CABLE_DEVICE`/`ARMCHAIR_MIC_DEVICE` pair).
 
 #### No-Voicemeeter fallback (Listen mode only)
 
