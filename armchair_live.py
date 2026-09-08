@@ -1391,13 +1391,22 @@ def main():
                 with open(PREWARM_FILE, 'r') as f:
                     engine = f.read().strip()
                 if engine and engine != last_seen and get_worker(engine):
-                    last_seen = engine
-                    log("TTS", f"Prewarming {engine} worker (background)...")
-                    w = get_worker(engine)
-                    # Hold the worker lock — prewarm must not race an in-flight generate()
-                    with w.lock:
-                        if w.proc is None or w.proc.poll() is not None:
-                            w._start()
+                    # Prewarm only the engine the dashboard actually selected.
+                    # A stale prewarm file from an old session (e.g. chatterbox
+                    # left over after switching to piper) must NOT start a
+                    # worker nobody asked for (idle VRAM + startup churn).
+                    # Do not set last_seen on mismatch: when the user really
+                    # switches engines, the dashboard saves the config AND
+                    # writes this file, so the next 1s tick matches and fires.
+                    cfg_engine = get_agent_config().get('tts_engine', TTS_ENGINE_DEFAULT)
+                    if engine == cfg_engine:
+                        last_seen = engine
+                        log("TTS", f"Prewarming {engine} worker (background)...")
+                        w = get_worker(engine)
+                        # Hold the worker lock — prewarm must not race an in-flight generate()
+                        with w.lock:
+                            if w.proc is None or w.proc.poll() is not None:
+                                w._start()
             except FileNotFoundError:
                 pass
             except Exception as e:

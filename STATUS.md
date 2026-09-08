@@ -51,6 +51,11 @@ next-steps + Voicemeeter-required-for-Talk-mode note.
   `voice: mustka` (the 2026-09-07 hard-bake) — 1–2s CPU renders replace chatterbox's
   19s cold start.
 
+**Update 2026-09-08 — prewarm gate:**
+- Prewarm gate: workers (chatterbox/kokoro) start only when their engine is the
+  configured/dashboard-selected one — stale `tts_prewarm.txt` entries no longer
+  cold-load chatterbox on piper setups.
+
 ## Verified Live (2026-08-28, session 3 — voices + curation)
 
 **Single voices folder.** `C:\armchair\Armchair\voices\` (repo-local) is now the one voices
