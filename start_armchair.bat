@@ -19,6 +19,11 @@ if not exist "%WHISPER_PY%" (
     exit /b 1
 )
 
+REM --- Piper engine: prefer piper_tts venv if installed ---
+REM (piper_tts 1.8+ handles the multi-codepoint phonemes in baked voices like
+REM  mustka/kerry; piper.exe 1.2.0 aborts on them. Falls back to the old exe.)
+if exist "%PARENT%\venvs\piper\Scripts\piper.exe" set "PIPER_BIN=%PARENT%\venvs\piper\Scripts\piper.exe"
+
 REM --- Audio config ---
 set "OUTPUT_FILE=%PARENT%\armchair_audio.raw"
 set "FFMPEG=C:\Users\krisr\Documents\ffmpeg\ffmpeg.exe"
