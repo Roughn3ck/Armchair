@@ -68,7 +68,7 @@ if %errorlevel%==0 (
     echo Download VB-Audio Virtual Cable from https://vb-audio.com/Cable/
 )
 
-C:\Users\krisr\Documents\ffmpeg\ffmpeg.exe -list_devices true -f dshow -i dummy 2>&1 | findstr /C:"Voicemeeter Output" >nul
+C:\Users\krisr\Documents\ffmpeg\ffmpeg.exe -list_devices true -f dshow -i dummy 2>&1 | findstr /C:"Voicemeeter Out B1" >nul
 if %errorlevel%==0 (
     echo [OK] Voicemeeter detected
 ) else (
@@ -84,7 +84,7 @@ echo.
 echo   SPEAK INTO YOUR MIC while this runs. The file must not be empty.
 echo.
 
-C:\Users\krisr\Documents\ffmpeg\ffmpeg.exe -y -f dshow -i "audio=Voicemeeter Output (VB-Audio Voicemeeter VAIO)" -ac 1 -ar 16000 -sample_fmt s16 -t 5 B:\armchair_test.raw 2>nul
+C:\Users\krisr\Documents\ffmpeg\ffmpeg.exe -y -f dshow -i "audio=Voicemeeter Out B1 (VB-Audio Voicemeeter VAIO)" -ac 1 -ar 16000 -sample_fmt s16 -t 5 B:\armchair_test.raw 2>nul
 
 if exist B:\armchair_test.raw (
     for %%A in (B:\armchair_test.raw) do echo Test capture: %%~zA bytes
@@ -105,7 +105,8 @@ if exist B:\armchair_test.raw (
 echo.
 echo Ready to start the pipeline?
 echo   1. Run start_armchair.bat (audio + dashboard + pipeline + browser)
-echo   2. Talk mode: see the capture-repoint note in STATUS.md (pending live test)
+echo   2. Talk mode: capture rides B1 (repointed 2026-09-07). Call test = caller
+echo      hears you + the agent; transcript shows you + caller, never the agent.
 echo.
 pause
 
