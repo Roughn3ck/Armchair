@@ -1068,6 +1068,8 @@ class Speaker:
         self.voice_model = voice_model
         self.tts_reference = tts_reference or CHATTERBOX_REF_DEFAULT
         self.speaking = False
+        self.playing = False        # True only while TTS is audible on speakers
+        self.speaking_ended = 0.0   # last playback end time (echo-gate tail)
         self.audio_output = _pf.create_audio_output()
         os.makedirs(TTS_OUTPUT_DIR, exist_ok=True)
         os.makedirs(_pf.tmp_dir, exist_ok=True)
@@ -1164,7 +1166,12 @@ class Speaker:
                 log("TTS", f"WAV slow to appear, trying copy anyway: {wav_path}")
 
             log("TTS", f"{agent_name}: {text[:80]}...")
-            self.audio_output.play(wav_path)
+            self.playing = True
+            try:
+                self.audio_output.play(wav_path)
+            finally:
+                self.playing = False
+                self.speaking_ended = time.time()
 
         except Exception as e:
             log("TTS", f"Error: {e}")
@@ -1373,6 +1380,7 @@ def main():
     except ValueError:
         FOLLOWUP_TIMEOUT = 60
     agent_spoken = deque(maxlen=6)  # (timestamp, _norm_speech(cleaned)) per reply
+    echo_gate = env_bool('ECHO_GATE', True)  # discard mic audio during own playback
     THINK_INTERVAL = 4
     last_tts_sig = None  # (engine, voice, ref) — rebuild Speaker when dashboard changes it
 
@@ -1456,9 +1464,17 @@ def main():
             log("VAD", f"Speech detected: {len(speech)} samples ({len(speech)/16000:.1f}s)")
 
         if speech is not None:
-            # We have speech — add to transcriber buffer
-            transcriber.add_speech(speech)
-            silence_counter = 0
+            # Playback gate: while our TTS plays on the speakers, the mic hears
+            # us, not the room. Discard that audio before it becomes speech —
+            # the echo never reaches Whisper, so it can't loop.
+            if echo_gate and speaker and (
+                    speaker.playing or
+                    time.time() - getattr(speaker, 'speaking_ended', 0.0) < 1.5):
+                log("TTS", "Discarded speech during own playback (gate)")
+            else:
+                # We have speech — add to transcriber buffer
+                transcriber.add_speech(speech)
+                silence_counter = 0
 
             # Try incremental transcription with timestamps
             transcribe_start = time.time()
@@ -1484,21 +1500,31 @@ def main():
                     if not text or len(text) < 3 or text.lower().strip() in SKIP_PHRASES:
                         continue
 
-                    # Self-hear echo suppression: the mic picks our own TTS off
-                    # the speakers. We know exactly what we said — a recent match
-                    # is our own voice, not a new utterance.
+                    # Self-hear echo suppression v2 (backstop for the playback
+                    # gate): Whisper's round-trip of our TTS is a garbled
+                    # FRAGMENT of what we said — so match WORDS, both
+                    # directions, against everything we recently said.
                     norm = _norm_speech(text)
-                    echo_hit = None
+                    norm_words = set(norm.split())
+                    said_union = set()
+                    for ts, said in agent_spoken:
+                        if time.time() - ts <= 20:
+                            said_union.update(said.split())
+                    is_echo = False
                     for ts, said in agent_spoken:
                         if time.time() - ts <= 20 and (
-                                said in norm or
+                                said in norm or norm in said or
                                 difflib.SequenceMatcher(None, said, norm).ratio() >= 0.85):
-                            echo_hit = said
+                            is_echo = True
                             break
-                    if echo_hit:
-                        # Strip the echoed part; keep genuine user speech said
-                        # over the agent's tail (speech-over-playback merges).
-                        remainder = _norm_speech(norm.replace(echo_hit, ' '))
+                    # Every word (>=2) of the new text was spoken by us
+                    # recently -> garbled echo fragment.
+                    if not is_echo and len(norm_words) >= 2 and norm_words <= said_union:
+                        is_echo = True
+                    if is_echo:
+                        # Word-level strip: keep only words we did NOT recently
+                        # say — genuine user speech said over the echo survives.
+                        remainder = ' '.join(w for w in norm.split() if w not in said_union)
                         if len(remainder) >= 3:
                             log("TTS", f"Echo stripped, keeping user speech: {remainder[:60]}")
                             text = remainder
