@@ -64,6 +64,12 @@ next-steps + Voicemeeter-required-for-Talk-mode note.
   lines (normalized containment / difflib >= 0.85, 20s window) are dropped or
   stripped — no more SPEAKER_xx lines repeating the agent's own words.
 
+**Update 2026-09-10 — self-conversation loop fixed:**
+- Playback gate discards mic audio while the agent's own TTS is audible on the
+  speakers (+1.5s tail), and echo matching is now word-based and bidirectional
+  (catches garbled fragments). Known tradeoff: no barge-in while the agent
+  speaks — use headphones on A1 and ECHO_GATE=0 to restore it.
+
 ## Verified Live (2026-08-28, session 3 — voices + curation)
 
 **Single voices folder.** `C:\armchair\Armchair\voices\` (repo-local) is now the one voices
