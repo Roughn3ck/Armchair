@@ -39,6 +39,8 @@ import urllib.request
 import urllib.error
 import shutil
 import re
+import difflib
+from collections import deque
 import numpy as np
 
 # Add whisper_streaming to path
@@ -192,6 +194,11 @@ def clean_for_speech(text):
     text = re.sub(r'[\[\](){}]', '', text)
     text = re.sub(r'\s+', ' ', text).strip()
     return text
+
+
+def _norm_speech(text):
+    """Lowercase, strip punctuation, collapse whitespace — for echo matching."""
+    return ' '.join(''.join(ch for ch in text.lower() if ch.isalnum() or ch == ' ').split())
 
 
 # ============================================================
@@ -1365,6 +1372,7 @@ def main():
         FOLLOWUP_TIMEOUT = int(env('FOLLOWUP_TIMEOUT', '60') or 60)
     except ValueError:
         FOLLOWUP_TIMEOUT = 60
+    agent_spoken = deque(maxlen=6)  # (timestamp, _norm_speech(cleaned)) per reply
     THINK_INTERVAL = 4
     last_tts_sig = None  # (engine, voice, ref) — rebuild Speaker when dashboard changes it
 
@@ -1476,6 +1484,28 @@ def main():
                     if not text or len(text) < 3 or text.lower().strip() in SKIP_PHRASES:
                         continue
 
+                    # Self-hear echo suppression: the mic picks our own TTS off
+                    # the speakers. We know exactly what we said — a recent match
+                    # is our own voice, not a new utterance.
+                    norm = _norm_speech(text)
+                    echo_hit = None
+                    for ts, said in agent_spoken:
+                        if time.time() - ts <= 20 and (
+                                said in norm or
+                                difflib.SequenceMatcher(None, said, norm).ratio() >= 0.85):
+                            echo_hit = said
+                            break
+                    if echo_hit:
+                        # Strip the echoed part; keep genuine user speech said
+                        # over the agent's tail (speech-over-playback merges).
+                        remainder = _norm_speech(norm.replace(echo_hit, ' '))
+                        if len(remainder) >= 3:
+                            log("TTS", f"Echo stripped, keeping user speech: {remainder[:60]}")
+                            text = remainder
+                        else:
+                            log("TTS", f"Echo suppressed (own voice): {text[:60]}")
+                            continue
+
                     # Match speaker using timestamp
                     speaker_label = "SPEAKER_00"
                     if diarizer and speaker_segments:
@@ -1527,6 +1557,8 @@ def main():
                                 transcript_buffer.append(f"{agent_name}: {cleaned}")
                                 with open(TRANSCRIPT_FILE, 'w') as f:
                                     f.write('\n'.join(transcript_buffer))
+
+                                agent_spoken.append((time.time(), _norm_speech(cleaned)))
 
                                 # Hot-swap TTS engine/voice if dashboard config changed mid-call
                                 cfg_now = get_agent_config()
