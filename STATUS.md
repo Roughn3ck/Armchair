@@ -56,6 +56,14 @@ next-steps + Voicemeeter-required-for-Talk-mode note.
   configured/dashboard-selected one — stale `tts_prewarm.txt` entries no longer
   cold-load chatterbox on piper setups.
 
+**Update 2026-09-08 — conversational polish:**
+- Follow-up window (`FOLLOWUP_TIMEOUT`, default 60s): say the agent's name once
+  to open a conversation — replies keep flowing without the name until the
+  window expires or a [SILENCE] decline closes it; the name re-opens it.
+- Self-hear echo suppression: new transcriptions matching recently spoken TTS
+  lines (normalized containment / difflib >= 0.85, 20s window) are dropped or
+  stripped — no more SPEAKER_xx lines repeating the agent's own words.
+
 ## Verified Live (2026-08-28, session 3 — voices + curation)
 
 **Single voices folder.** `C:\armchair\Armchair\voices\` (repo-local) is now the one voices
