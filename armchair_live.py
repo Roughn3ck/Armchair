@@ -794,13 +794,22 @@ class LLMClient:
             return env(env_key, '')
         return ''  # ollama doesn't need a key
 
-    def think(self, transcript):
+    def think(self, transcript, follow_up=False):
         if not transcript or len(transcript) < 5:
             return None
 
-        self.conversation.append({
-            "role": "user",
-            "content": (
+        if follow_up:
+            gate = (
+                f"Recent transcript:\n{transcript}\n\n"
+                "The speaker addressed you by name earlier and is continuing the conversation. "
+                "Decide: is this line part of the conversation with you? "
+                "If yes: respond NOW, in character, exactly as you would say it out loud in the room. "
+                "Plain text only — no markdown, no emoji, no lists. Keep it short (1-2 sentences). "
+                "If it is clearly directed at someone else instead (the speaker has moved on "
+                "to another person/topic): reply with exactly [SILENCE] and nothing else."
+            )
+        else:
+            gate = (
                 f"Recent transcript:\n{transcript}\n\n"
                 "The last line above contains your name. Decide: is the speaker talking TO you — "
                 "greeting you, asking you something, or directing words at you? Or are they just mentioning you "
@@ -809,7 +818,7 @@ class LLMClient:
                 "Plain text only — no markdown, no emoji, no lists. Keep it short (1-2 sentences). "
                 "If you are merely mentioned in passing: reply with exactly [SILENCE] and nothing else."
             )
-        })
+        self.conversation.append({"role": "user", "content": gate})
 
         if len(self.conversation) > 20:
             self.conversation = self.conversation[-20:]
@@ -1351,6 +1360,11 @@ def main():
     transcript_buffer = []
     last_minute_stamp = None
     last_think_time = 0
+    convo_until = 0.0  # follow-up window: name said once opens the conversation
+    try:
+        FOLLOWUP_TIMEOUT = int(env('FOLLOWUP_TIMEOUT', '60') or 60)
+    except ValueError:
+        FOLLOWUP_TIMEOUT = 60
     THINK_INTERVAL = 4
     last_tts_sig = None  # (engine, voice, ref) — rebuild Speaker when dashboard changes it
 
@@ -1490,15 +1504,22 @@ def main():
 
                     log("HEARD", f"({transcribe_elapsed:.1f}s) [{display_name}] {text[:80]}")
 
-                    # Talk mode — check if agent name is in the text
+                    # Talk mode — reply on name OR while the follow-up window is open
                     current_mode = get_mode()
-                    if current_mode == 'talk' and thinker and agent_name.lower() in text.lower():
+                    named = agent_name.lower() in text.lower()
+                    if current_mode == 'talk' and thinker and (named or time.time() < convo_until):
                         now = time.time()
                         if (now - last_think_time) >= THINK_INTERVAL:
                             recent = '\n'.join(transcript_buffer[-10:])
-                            log("LLM", "Agent name detected — checking...")
-                            response = thinker.think(recent)
+                            log("LLM", "Agent name detected — checking..." if named
+                                else "Follow-up window — checking...")
+                            response = thinker.think(recent, follow_up=not named)
                             last_think_time = time.time()
+
+                            # Only real replies keep the conversation open;
+                            # [SILENCE] declines and window expiry close it.
+                            if response:
+                                convo_until = time.time() + FOLLOWUP_TIMEOUT
 
                             if response:
                                 cleaned = clean_for_speech(response)
