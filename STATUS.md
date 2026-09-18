@@ -1,5 +1,13 @@
 # STATUS — Agent In The Armchair
 
+## 2026-09-18 — Layer 1: STT vocab biasing, endpoint knob, event-driven diarization, `[METRIC]` instrumentation
+
+Three env knobs, no default behavior change. A/B via console `[METRIC]` lines.
+
+- **`WHISPER_INITIAL_PROMPT`** — faster-whisper `initial_prompt` primes the decoder with house vocabulary (wake name + pack words) so "Agricola" and the pack transcribe reliably. Default prompt in `.env.example`; empty disables. Bleed guard logs `WARNING: initial_prompt bleed suspected in segment` (log-only; Silero VAD pre-gating is the real protection).
+- **`ENDPOINT_SILENCE_MS`** — Silero hangover: ms of silence after the last voiced frame that finalizes an utterance. Default `0` = legacy behavior (first silent 32 ms frame ends speech). `[METRIC] endpoint_delay_ms=<X>` per utterance; raise the knob and watch the metric to trade snappiness for fewer mid-utterance cuts.
+- **Event-driven diarization** — pyannote now re-runs **on utterance endpoint** so speaker labels land with the speech. `DIARIZE_INTERVAL` is now refresh-only (keeps long open monologues labeled mid-way); no wall-clock re-runs while idle. `[METRIC] diar_lag_ms=<X>` = ms from endpoint fire to labels applied.
+
 ## Current Version: v2.8 (single voices dir + identity curation) — WORKING
 
 ## Verified Live (2026-09-05 — audio routing v2: three-listener matrix, echo killed)
