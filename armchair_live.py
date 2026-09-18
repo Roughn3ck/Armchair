@@ -96,14 +96,26 @@ READ_CHUNK = 8000      # 0.5s of audio per read (16kHz * 0.5s * 2 bytes)
 WHISPER_MODEL_DEFAULT = "large-v3-turbo"
 WHISPER_DEVICE = "cuda"
 WHISPER_COMPUTE = "float16"
+# Decoder priming: house vocabulary so wake-name + pack words transcribe
+# reliably (the DIY version of commercial keyword-biasing). Kept short — long
+# prompts lose influence. Empty string disables.
+WHISPER_INITIAL_PROMPT_DEFAULT = (
+    "Agricola. The pack: Muska, Kimi, Slater, Aria, Cochran, Sagan, Garrison, "
+    "Oyola, Deschamps. Voicemeeter, piper, FishTank, ColdStack, Sentinel."
+)
 
 # VAD config (Silero)
 VAD_THRESHOLD = 0.5    # Speech probability threshold
 VAD_MIN_SPEECH = 0.25   # Min seconds of speech to trigger
 VAD_MAX_BUFFER = 10    # Max seconds of audio in Whisper buffer
+# Endpoint: how many ms of silence after the last voiced frame finalizes an
+# utterance (Silero "hangover"). Default 0 = legacy behavior (first silent
+# 32 ms frame ends speech) — no behavior change; the knob enables empirical
+# tuning of endpoint snappiness.
+ENDPOINT_SILENCE_MS_DEFAULT = 0
 
 # Diarization config
-DIARIZE_INTERVAL = 10  # Re-run diarization every N seconds
+DIARIZE_INTERVAL = 10  # Refresh-only while an utterance is open (event-driven on endpoint)
 DIAR_BUFFER_SECONDS = 16  # Rolling buffer for diarization
 
 # LLM config — provider-agnostic (read from .env or agent_config.json)
@@ -462,9 +474,16 @@ class AudioStreamReader:
 # VAD (Silero Voice Activity Detection)
 # ============================================================
 class VAD:
-    """Silero VAD — detects speech in audio chunks. Nearly free on GPU."""
+    """Silero VAD — detects speech in audio chunks. Nearly free on GPU.
 
-    def __init__(self, threshold=VAD_THRESHOLD, min_speech_sec=VAD_MIN_SPEECH):
+    Endpoint behavior: while speaking, a run of silent frames below
+    `endpoint_silence_ms` is treated as a hangover (still one utterance); the
+    utterance finalizes only after that much continuous silence. Default 0 ms
+    preserves the legacy behavior — the first silent 32 ms frame ends speech.
+    """
+
+    def __init__(self, threshold=VAD_THRESHOLD, min_speech_sec=VAD_MIN_SPEECH,
+                 endpoint_silence_ms=ENDPOINT_SILENCE_MS_DEFAULT):
         import torch
         self.model = torch.hub.load('snakers4/silero-vad', 'silero_vad', trust_repo=True)[0]
         self.threshold = threshold
@@ -476,7 +495,13 @@ class VAD:
         self.sample_rate = 16000
         # Silero expects 512 samples (32ms at 16kHz)
         self.frame_size = 512
-        log("VAD", f"Silero VAD loaded (threshold={threshold})")
+        self.frame_ms = (self.frame_size / self.sample_rate) * 1000.0  # 32 ms
+        # Silence needed after last voiced frame to finalize an utterance
+        self.endpoint_silence_ms = endpoint_silence_ms
+        self._silent_run_ms = 0.0       # continuous silence while is_speaking
+        self._last_voiced_at = None     # time of last frame >= threshold
+        self._endpoint_event = None     # one-shot: delay_ms at utterance finalize
+        log("VAD", f"Silero VAD loaded (threshold={threshold}, endpoint_silence_ms={endpoint_silence_ms})")
 
     def process(self, audio_samples):
         """Process a chunk of audio. Returns speech audio or None (silence)."""
@@ -497,13 +522,21 @@ class VAD:
             if prob >= self.threshold:
                 self.speech_frames += 1
                 self.speech_buffer.append(frame)
+                self._silent_run_ms = 0.0
+                self._last_voiced_at = time.time()
                 if not self.is_speaking:
                     self.is_speaking = True
             else:
                 self.silence_frames += 1
                 if self.is_speaking:
-                    # End of speech utterance
-                    self.is_speaking = False
+                    self._silent_run_ms += self.frame_ms
+                    if self._silent_run_ms >= self.endpoint_silence_ms:
+                        # End of speech utterance (endpoint fire)
+                        self.is_speaking = False
+                        if self._last_voiced_at is not None:
+                            self._endpoint_event = round(
+                                (time.time() - self._last_voiced_at) * 1000)
+                        self._silent_run_ms = 0.0
 
         # Return accumulated speech if we have any
         if self.speech_buffer:
@@ -512,6 +545,15 @@ class VAD:
             return speech
 
         return None
+
+    def consume_endpoint_event(self):
+        """One-shot read of the utterance-finalize event.
+
+        Returns endpoint_delay_ms (ms from last voiced frame to endpoint
+        declaration) once per finalized utterance, else None.
+        """
+        ev, self._endpoint_event = self._endpoint_event, None
+        return ev
 
 
 # ============================================================
@@ -561,6 +603,13 @@ class StreamingTranscriber:
         self.model = WhisperModel(model_name, device=device, compute_type=compute_type)
         log("STT", "Model loaded")
 
+        # Vocab biasing: prime the decoder with house vocabulary (wake name +
+        # pack words). Read once at init like WHISPER_MODEL. Empty disables.
+        self.initial_prompt = env('WHISPER_INITIAL_PROMPT', WHISPER_INITIAL_PROMPT_DEFAULT)
+        self._prompt_tokens = _norm_speech(self.initial_prompt).split() if self.initial_prompt else []
+        if self.initial_prompt:
+            log("STT", f"initial_prompt: {self.initial_prompt[:60]}")
+
         self.audio_buffer = np.array([], dtype=np.float32)
         self.last_output_end = 0.0  # Timestamp of last output word
         self.max_buffer = VAD_MAX_BUFFER * 16000
@@ -589,24 +638,42 @@ class StreamingTranscriber:
                 # sub-second VAD blips — silence them
                 warnings.simplefilter("ignore", RuntimeWarning)
                 with np.errstate(all="ignore"):
-                    segments, _ = self.model.transcribe(
-                        self.audio_buffer, beam_size=5, language='en',
+                    kwargs = dict(
+                        beam_size=5, language='en',
                         vad_filter=False,
                         condition_on_previous_text=False,
-                        word_timestamps=True
+                        word_timestamps=True,
                     )
+                    if self.initial_prompt:
+                        kwargs['initial_prompt'] = self.initial_prompt
+                    segments, _ = self.model.transcribe(self.audio_buffer, **kwargs)
                     result = []
                     for seg in segments:
+                        text = seg.text.strip()
+                        # initial_prompt bleed guard: on near-silence the decoder
+                        # can regurgitate the prompt. Log only — we eyeball the
+                        # A/B. VAD pre-gating is the real protection.
+                        if self._prompt_tokens and self._looks_like_prompt_bleed(text):
+                            log("STT", f"WARNING: initial_prompt bleed suspected in segment: {text[:60]}")
                         result.append({
                             'start': seg.start,
                             'end': seg.end,
-                            'text': seg.text.strip()
+                            'text': text
                         })
             return result
 
         except Exception as e:
             log("STT", f"Error: {e}")
             return []
+
+    def _looks_like_prompt_bleed(self, text):
+        """True if >=80% of the initial_prompt tokens appear in-order in text."""
+        if not self._prompt_tokens:
+            return False
+        words = _norm_speech(text).split()
+        it = iter(words)
+        hits = sum(1 for tok in self._prompt_tokens if any(w == tok for w in it))
+        return hits >= max(1, int(round(0.8 * len(self._prompt_tokens))))
 
     def get_new_segments(self):
         """Transcribe and return only segments after last_output_end."""
@@ -627,7 +694,11 @@ class StreamingTranscriber:
 # SPEAKER DIARIZATION (pyannote-audio, rolling buffer)
 # ============================================================
 class Diarizer:
-    """Rolling buffer diarization. Runs every 10s on 16s of audio."""
+    """Rolling buffer diarization over a 16s window.
+
+    Event-driven: force_diarize() runs at every utterance endpoint so labels
+    land with the speech. The DIARIZE_INTERVAL wall-clock tick is refresh-only —
+    it keeps long open monologues labeled mid-way. No re-runs while idle."""
 
     def __init__(self):
         log("DIAR", "Loading pyannote-audio pipeline...")
@@ -673,8 +744,11 @@ class Diarizer:
             del self.buffer[:excess]
 
     def get_speaker_segments(self):
-        """Run diarization and return list of (start, end, speaker_label) segments.
-        Re-runs every DIARIZE_INTERVAL seconds, returns cached result between runs.
+        """Return cached (start, end, speaker) segments; re-run every DIARIZE_INTERVAL.
+
+        Interval is now REFRESH-ONLY — the wall-clock tick keeps long monologues
+        labeled mid-way; endpoint fires call force_diarize() so labels land with
+        the utterance. While idle, no re-runs happen (nothing calls this).
         """
         now = time.time()
         if self._has_result and (now - self.last_diarize_time) < DIARIZE_INTERVAL:
@@ -685,7 +759,26 @@ class Diarizer:
 
         self.last_diarize_time = now
         self._has_result = True
+        return self._run_diarization()
 
+    def force_diarize(self):
+        """Run diarization immediately (endpoint-driven). Returns (segments, run_ms).
+
+        Bypasses the DIARIZE_INTERVAL cache so labels land with the utterance.
+        Returns ((0, 999, current_speaker), 0) if the buffer is too short or the
+        run fails.
+        """
+        if len(self.buffer) < 128000 * 2:  # Need at least 8s
+            return [(0, 999, self.current_speaker)], 0
+
+        start = time.time()
+        self.last_diarize_time = start
+        self._has_result = True
+        segs = self._run_diarization()
+        return segs, round((time.time() - start) * 1000)
+
+    def _run_diarization(self):
+        """Actually run pyannote over the rolling buffer and update caches."""
         import torch
         import soundfile as sf
         import tempfile
@@ -1354,7 +1447,11 @@ def main():
 
     # Initialize components
     reader = AudioStreamReader(AUDIO_FILE)
-    vad = VAD()
+    try:
+        ENDPOINT_SILENCE_MS = int(env('ENDPOINT_SILENCE_MS', str(ENDPOINT_SILENCE_MS_DEFAULT)) or ENDPOINT_SILENCE_MS_DEFAULT)
+    except ValueError:
+        ENDPOINT_SILENCE_MS = ENDPOINT_SILENCE_MS_DEFAULT
+    vad = VAD(endpoint_silence_ms=ENDPOINT_SILENCE_MS)
     transcriber = StreamingTranscriber(args.whisper_model, WHISPER_DEVICE,
                                        "float16" if WHISPER_DEVICE == "cuda" else "int8")
 
@@ -1459,6 +1556,16 @@ def main():
 
         # Feed to VAD
         speech = vad.process(audio)
+
+        # Utterance finalized this read? (endpoint fire) — measure the delay and
+        # re-label speakers NOW so they land with the utterance, not 10s later.
+        ep = vad.consume_endpoint_event()
+        if ep is not None:
+            log("METRIC", f"endpoint_delay_ms={ep}")
+            if diarizer:
+                ep_t = time.time()
+                _, run_ms = diarizer.force_diarize()
+                log("METRIC", f"diar_lag_ms={round((time.time() - ep_t) * 1000)}")
 
         if speech is not None:
             log("VAD", f"Speech detected: {len(speech)} samples ({len(speech)/16000:.1f}s)")
