@@ -220,7 +220,7 @@ class ArmchairHandler(http.server.SimpleHTTPRequestHandler):
                     endpoints = {
                         'openai': 'https://api.openai.com/v1/chat/completions',
                         'openrouter': 'https://openrouter.ai/api/v1/chat/completions',
-                        'tokenra': 'https://api.tokenra.ai/v1/chat/completions',
+                        'tokenra': 'https://tokenra.io/v1/chat/completions',
                     }
                     endpoint = endpoints.get(provider, '')
                     if not endpoint:

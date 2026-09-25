@@ -860,7 +860,7 @@ PROVIDER_ENDPOINTS = {
     'openai': 'https://api.openai.com/v1/chat/completions',
     'anthropic': 'https://api.anthropic.com/v1/messages',
     'openrouter': 'https://openrouter.ai/api/v1/chat/completions',
-    'tokenra': 'https://api.tokenra.ai/v1/chat/completions',  # adjust if different
+    'tokenra': 'https://tokenra.io/v1/chat/completions',
 }
 
 
