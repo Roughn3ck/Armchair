@@ -46,6 +46,39 @@ def _read_env_file(key):
     return ''
 
 
+# Piper voices — scanned from platform_config voices_dir (repo-local, shared by TTS engines)
+try:
+    from platform_config import Platform as _Platform
+    _PF = _Platform.detect()
+except Exception:
+    _PF = None
+
+_VOICES_CACHE = {'ts': 0.0, 'voices': []}
+_VOICES_TTL = 30.0
+
+
+def _voices_dir():
+    if _PF is not None:
+        try:
+            return _PF.voices_dir
+        except Exception:
+            pass
+    return os.path.join(_SCRIPT_DIR, 'voices')
+
+
+def _scan_voices():
+    """Voice ids = .onnx stems that have a sibling .onnx.json (what the Piper loader expects)."""
+    d = _voices_dir()
+    voices = []
+    try:
+        for name in os.listdir(d):
+            if name.endswith('.onnx') and os.path.exists(os.path.join(d, f"{name[:-5]}.onnx.json")):
+                voices.append(name[:-5])
+    except Exception:
+        pass
+    return sorted(voices)
+
+
 class ArmchairHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
@@ -106,6 +139,13 @@ class ArmchairHandler(http.server.SimpleHTTPRequestHandler):
                 'agent_config': agent_config,
                 'time': time.strftime('%H:%M:%S')
             })
+
+        elif self.path == '/api/voices':
+            now = time.time()
+            if now - _VOICES_CACHE['ts'] > _VOICES_TTL:
+                _VOICES_CACHE['voices'] = _scan_voices()
+                _VOICES_CACHE['ts'] = now
+            self._send_json({'voices': _VOICES_CACHE['voices']})
 
         elif self.path == '/' or self.path == '/index.html':
             self.send_response(200)

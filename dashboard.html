@@ -311,6 +311,31 @@ function saveAgentConfig() {
     }).catch(() => {});
 }
 
+let voicesLoaded = false;
+
+function populateVoices() {
+    const voiceEl = document.getElementById('cfgVoice');
+    if (!voiceEl) return;
+    fetch('/api/voices').then(r => r.json()).then(data => {
+        const voices = data.voices || [];
+        if (!voices.length) return;
+        const current = (agentConfig && agentConfig.voice) || voiceEl.value || '';
+        const list = voices.slice();
+        if (current && !list.includes(current)) list.push(current + ' (missing)');
+        voiceEl.innerHTML = '';
+        list.forEach(v => {
+            const missing = v.endsWith(' (missing)');
+            const value = missing ? v.slice(0, -' (missing)'.length) : v;
+            const opt = document.createElement('option');
+            opt.value = value;
+            opt.textContent = v;
+            if (value === current) opt.selected = true;
+            voiceEl.appendChild(opt);
+        });
+        voicesLoaded = true;
+    }).catch(() => {});
+}
+
 function onEngineChange() {
     const engine = document.getElementById('cfgEngine').value;
     document.getElementById('rowVoice').style.display = engine === 'piper' ? '' : 'none';
@@ -601,6 +626,7 @@ function copyTranscript() {
 }
 
 setMode('listen');
+populateVoices();
 setInterval(update, 2000);
 update();
 </script>
