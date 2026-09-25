@@ -119,7 +119,7 @@ DIARIZE_INTERVAL = 10  # Refresh-only while an utterance is open (event-driven o
 DIAR_BUFFER_SECONDS = 16  # Rolling buffer for diarization
 
 # LLM config — provider-agnostic (read from .env or agent_config.json)
-LLM_PROVIDER_DEFAULT = "ollama"  # ollama | openai | anthropic | tokenra | openrouter
+LLM_PROVIDER_DEFAULT = "ollama"  # ollama | openai | anthropic | tokenra | openrouter | deepseek | zai | minimax
 LLM_MODEL_DEFAULT = "deepseek-v4-flash:cloud"
 LLM_API_HOST = "localhost"
 LLM_API_PORT = 11434
@@ -854,20 +854,24 @@ class Diarizer:
 
 
 # ============================================================
-# LLM CLIENT (provider-agnostic: ollama | openai | anthropic | tokenra | openrouter)
+# LLM CLIENT (provider-agnostic: ollama | openai | anthropic | tokenra | openrouter | deepseek | zai | minimax)
 # ============================================================
 PROVIDER_ENDPOINTS = {
     'openai': 'https://api.openai.com/v1/chat/completions',
     'anthropic': 'https://api.anthropic.com/v1/messages',
     'openrouter': 'https://openrouter.ai/api/v1/chat/completions',
     'tokenra': 'https://tokenra.io/v1/chat/completions',
+    'deepseek': 'https://api.deepseek.com/v1/chat/completions',
+    'zai': 'https://api.z.ai/api/paas/v4/chat/completions',
+    'minimax': 'https://api.minimax.io/v1/chat/completions',
 }
 
 
 class LLMClient:
     """Provider-agnostic LLM client.
 
-    Supports: ollama (local), openai, anthropic, tokenra, openrouter.
+    Supports: ollama (local), openai, anthropic, tokenra, openrouter,
+    deepseek, zai, minimax.
     Provider + credentials from .env; model from agent_config or .env.
     """
     def __init__(self, provider, model, agent_name, persona, identity_context=""):
@@ -888,6 +892,9 @@ class LLMClient:
             'anthropic': 'ANTHROPIC_API_KEY',
             'openrouter': 'OPENROUTER_API_KEY',
             'tokenra': 'TOKENRA_API_KEY',
+            'deepseek': 'DEEPSEEK_API_KEY',
+            'zai': 'ZAI_API_KEY',
+            'minimax': 'MINIMAX_API_KEY',
         }
         env_key = key_map.get(self.provider, '')
         if env_key:
@@ -929,7 +936,7 @@ class LLMClient:
             elif self.provider == 'anthropic':
                 response_text = self._call_anthropic()
             else:
-                # openai-compatible: openai, openrouter, tokenra
+                # openai-compatible: openai, openrouter, tokenra, deepseek, zai, minimax
                 response_text = self._call_openai_compatible()
 
             if response_text:
@@ -1480,6 +1487,7 @@ def main():
     echo_gate = env_bool('ECHO_GATE', True)  # discard mic audio during own playback
     THINK_INTERVAL = 4
     last_tts_sig = None  # (engine, voice, ref) — rebuild Speaker when dashboard changes it
+    last_agent_sig = (agent_name, persona)  # rebuild LLMClient when name/persona change
 
     log("ARMCHAIR", "=" * 60)
     log("ARMCHAIR", f"AGENT IN THE ARMCHAIR — {agent_name} (streaming)")
@@ -1693,8 +1701,25 @@ def main():
 
                                 agent_spoken.append((time.time(), _norm_speech(cleaned)))
 
-                                # Hot-swap TTS engine/voice if dashboard config changed mid-call
+                                # Hot-reload agent identity (name/persona) if dashboard changed it
                                 cfg_now = get_agent_config()
+                                agent_sig = (cfg_now.get('name', AGENT_NAME_DEFAULT),
+                                             cfg_now.get('persona', AGENT_PERSONA_DEFAULT))
+                                if agent_sig != last_agent_sig:
+                                    try:
+                                        new_identity = load_identity(
+                                            IDENTITY_DIR, memory_dir=memory_dir,
+                                            max_chars=ident_max, recent_days=ident_days,
+                                            skip_files=[s for s in ident_skip.split(',') if s.strip()])
+                                        agent_name, persona = agent_sig
+                                        thinker = LLMClient(llm_provider, llm_model, agent_name, persona, new_identity)
+                                        last_agent_sig = agent_sig
+                                        log("ARMCHAIR", f"Agent identity reloaded -> {agent_name}")
+                                        log("ARMCHAIR", f"Agent: {agent_name}")
+                                    except Exception as e:
+                                        log("ARMCHAIR", f"Agent reload failed: {e}")
+
+                                # Hot-swap TTS engine/voice if dashboard config changed mid-call
                                 tts_sig = (cfg_now.get('tts_engine', TTS_ENGINE_DEFAULT),
                                            cfg_now.get('voice', TTS_VOICE_DEFAULT),
                                            cfg_now.get('tts_reference', CHATTERBOX_REF_DEFAULT))

@@ -16,6 +16,35 @@ AGENT_CONFIG_FILE = '/tmp/armchair/agent_config.json'
 # Serve static files (dashboard assets) from the script directory
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# LLM provider maps — keep in sync with armchair_live.py
+_PROVIDER_KEY_ENV = {
+    'openai': 'OPENAI_API_KEY',
+    'anthropic': 'ANTHROPIC_API_KEY',
+    'openrouter': 'OPENROUTER_API_KEY',
+    'tokenra': 'TOKENRA_API_KEY',
+    'deepseek': 'DEEPSEEK_API_KEY',
+    'zai': 'ZAI_API_KEY',
+    'minimax': 'MINIMAX_API_KEY',
+}
+
+
+def _read_env_file(key):
+    """Read a single key from the repo .env (same parse logic as armchair_live.env())."""
+    env_path = os.path.join(_SCRIPT_DIR, '.env')
+    try:
+        with open(env_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if '=' in line:
+                    k, _, v = line.partition('=')
+                    if k.strip() == key:
+                        return v.strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return ''
+
 
 class ArmchairHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -139,6 +168,14 @@ class ArmchairHandler(http.server.SimpleHTTPRequestHandler):
                 existing.update(data)
                 with open(AGENT_CONFIG_FILE, 'w') as f:
                     json.dump(existing, f)
+                # Signal armchair_live's watcher to hot-reload the agent identity
+                try:
+                    engine = existing.get('tts_engine', '')
+                    if engine:
+                        with open(PREWARM_FILE, 'w') as f:
+                            f.write(engine)
+                except Exception:
+                    pass
                 print(f'[DASHBOARD] Agent config updated: {data}')
                 self._send_json({'status': 'ok', 'config': existing})
             except Exception as e:
@@ -150,12 +187,7 @@ class ArmchairHandler(http.server.SimpleHTTPRequestHandler):
                 data = json.loads(body)
                 provider = data.get('provider', '')
                 key = data.get('key', '')
-                key_map = {
-                    'openai': 'OPENAI_API_KEY',
-                    'anthropic': 'ANTHROPIC_API_KEY',
-                    'openrouter': 'OPENROUTER_API_KEY',
-                    'tokenra': 'TOKENRA_API_KEY',
-                }
+                key_map = _PROVIDER_KEY_ENV
                 env_key = key_map.get(provider, '')
                 if not env_key:
                     self._send_json({'error': f'Unknown provider: {provider}'}, 400)
@@ -191,6 +223,14 @@ class ArmchairHandler(http.server.SimpleHTTPRequestHandler):
                 api_key = data.get('api_key', '')
                 model = data.get('model', '')
 
+                # Blank field + use_env_key -> fall back to the key in .env
+                if not api_key and data.get('use_env_key') and provider != 'ollama':
+                    env_name = _PROVIDER_KEY_ENV.get(provider, '')
+                    api_key = _read_env_file(env_name) if env_name else ''
+                    if not api_key:
+                        self._send_json({"ok": False, "error": f"No key in field and no {env_name or 'API_KEY'} in .env"})
+                        return
+
                 # Quick test: send a minimal request to the provider
                 if provider == 'ollama':
                     host = data.get('host', 'localhost')
@@ -216,11 +256,14 @@ class ArmchairHandler(http.server.SimpleHTTPRequestHandler):
                     except Exception as e:
                         self._send_json({"ok": False, "error": str(e)[:200]})
                 else:
-                    # OpenAI-compatible: openai, openrouter, tokenra
+                    # OpenAI-compatible: openai, openrouter, tokenra, deepseek, zai, minimax
                     endpoints = {
                         'openai': 'https://api.openai.com/v1/chat/completions',
                         'openrouter': 'https://openrouter.ai/api/v1/chat/completions',
                         'tokenra': 'https://tokenra.io/v1/chat/completions',
+                        'deepseek': 'https://api.deepseek.com/v1/chat/completions',
+                        'zai': 'https://api.z.ai/api/paas/v4/chat/completions',
+                        'minimax': 'https://api.minimax.io/v1/chat/completions',
                     }
                     endpoint = endpoints.get(provider, '')
                     if not endpoint:

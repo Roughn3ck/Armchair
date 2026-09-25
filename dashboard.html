@@ -207,6 +207,9 @@ body {
 <option value="anthropic">Anthropic</option>
 <option value="tokenra">TokenRa</option>
 <option value="openrouter">OpenRouter</option>
+<option value="deepseek">DeepSeek</option>
+<option value="zai">Z.ai (GLM)</option>
+<option value="minimax">MiniMax</option>
 </select>
 </div>
 <div class="config-row" id="rowLLMModel">
@@ -215,8 +218,9 @@ body {
 </div>
 <div class="config-row" id="rowAPIKey" style="display:none;">
 <label>API Key:</label>
-<input type="password" id="cfgAPIKey" placeholder="Stored in .env, not here" onchange="saveAPIKey()">
+<input type="password" id="cfgAPIKey" placeholder="Blank = use .env key" onchange="saveAPIKey()">
 <button class="save-btn" onclick="testLLM()" id="btnTestLLM">Test</button>
+<button class="save-btn" onclick="saveAndTest()" id="btnSaveTestLLM">Save &amp; Test</button>
 </div>
 <div class="config-row" id="rowOllamaHost" style="display:none;">
 <label>Ollama Host:</label>
@@ -341,6 +345,9 @@ function onProviderChange() {
         'anthropic': 'claude-sonnet-4-6',
         'tokenra': 'stealth/ox-alpha',
         'openrouter': 'anthropic/claude-sonnet-4',
+        'deepseek': 'deepseek-chat',
+        'zai': 'glm-4.6',
+        'minimax': 'MiniMax-M2',
     };
     modelInput.placeholder = placeholders[provider] || '';
     saveAgentConfig();
@@ -367,13 +374,14 @@ function testLLM() {
     const provider = document.getElementById('cfgLLMProvider').value;
     const model = document.getElementById('cfgLLMModel').value || document.getElementById('cfgLLMModel').placeholder;
     const apiKey = document.getElementById('cfgAPIKey').value;
+    const useEnvKey = !apiKey;
     const host = document.getElementById('cfgOllamaHost') ? document.getElementById('cfgOllamaHost').value : 'localhost';
     const port = document.getElementById('cfgOllamaPort') ? document.getElementById('cfgOllamaPort').value : '11434';
     btn.textContent = 'Testing...'; btn.style.color = 'var(--em-amber)';
     fetch('/api/test-llm', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({provider: provider, model: model, api_key: apiKey, host: host, port: port})
+        body: JSON.stringify({provider: provider, model: model, api_key: apiKey, use_env_key: useEnvKey, host: host, port: port})
     }).then(r => r.json()).then(data => {
         btn.textContent = data.ok ? '✓ OK' : '✗ Fail';
         btn.style.color = data.ok ? 'var(--em-green)' : 'var(--em-red)';
@@ -381,6 +389,27 @@ function testLLM() {
     }).catch(() => {
         btn.textContent = '✗ Fail'; btn.style.color = 'var(--em-red)';
         setTimeout(() => { btn.textContent = 'Test'; btn.style.color = ''; }, 3000);
+    });
+}
+
+function saveAndTest() {
+    // Save the key to .env, then immediately test (falls back to .env when the field is blank)
+    const btn = document.getElementById('btnSaveTestLLM');
+    const provider = document.getElementById('cfgLLMProvider').value;
+    const key = document.getElementById('cfgAPIKey').value;
+    btn.textContent = 'Saving...'; btn.style.color = 'var(--em-amber)';
+    fetch('/api/save-api-key', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({provider: provider, key: key})
+    }).then(r => r.json()).then(data => {
+        if (data.ok) {
+            document.getElementById('cfgAPIKey').value = '';
+            document.getElementById('cfgAPIKey').placeholder = 'Saved ✓';
+        }
+    }).catch(() => {}).finally(() => {
+        btn.textContent = 'Save & Test'; btn.style.color = '';
+        testLLM();
     });
 }
 
