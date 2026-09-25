@@ -300,9 +300,12 @@ function saveAgentConfig() {
         tts_engine: document.getElementById('cfgEngine').value,
         memory_dir: document.getElementById('cfgMemoryDir').value,
         llm_provider: document.getElementById('cfgLLMProvider').value,
-        llm_model: document.getElementById('cfgLLMModel').value || document.getElementById('cfgLLMModel').placeholder,
         timezone: document.getElementById('cfgTimezone').value
     };
+    // Model is input-value only — never the placeholder. Omit when empty so the
+    // backend preserves the existing config value instead of clobbering it.
+    const modelVal = document.getElementById('cfgLLMModel').value.trim();
+    if (modelVal) config.llm_model = modelVal;
     if (refVal.trim()) config.tts_reference = refVal.trim();
     fetch('/api/agent-config', {
         method: 'POST',
@@ -368,14 +371,19 @@ function onProviderChange() {
         'ollama': 'deepseek-v4-flash:cloud',
         'openai': 'gpt-4o',
         'anthropic': 'claude-sonnet-4-6',
-        'tokenra': 'stealth/ox-alpha',
+        'tokenra': 'glm-5.3-flash',
         'openrouter': 'anthropic/claude-sonnet-4',
         'deepseek': 'deepseek-chat',
         'zai': 'glm-4.6',
         'minimax': 'MiniMax-M2',
     };
     modelInput.placeholder = placeholders[provider] || '';
-    saveAgentConfig();
+    // Placeholder is display-only: don't auto-save when the field is empty or
+    // still shows the placeholder text (would write it into agent_config.json).
+    const modelVal = modelInput.value.trim();
+    if (modelVal && modelVal !== modelInput.placeholder) {
+        saveAgentConfig();
+    }
 }
 
 function saveAPIKey() {
