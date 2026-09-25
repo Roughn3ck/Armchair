@@ -192,6 +192,54 @@ if exist "%PIPER_DIR%\piper.exe" (
 )
 
 REM ============================================================
+REM  4b. Piper 1.8 venv -- required for baked house voices
+REM ============================================================
+echo.
+echo [4b/5] Setting up Piper 1.8 venv...
+set "PIPER_WHEEL=B:\Github\piper\piper_tts-1.8.0-cp39-abi3-win_amd64.whl"
+set "ESPEAK_SRC=B:\Github\piper\espeak-ng-data"
+if exist "%VENV_DIR%\piper\Scripts\python.exe" (
+    echo   Already exists, skipping. Delete to recreate.
+    goto :piper_venv_done
+)
+echo   Creating venv...
+python -m venv "%VENV_DIR%\piper"
+if not exist "%VENV_DIR%\piper\Scripts\python.exe" (
+    echo [WARN] Failed to create Piper venv - baked voices will crash on piper 1.2.0
+    goto :piper_venv_done
+)
+call "%VENV_DIR%\piper\Scripts\activate.bat"
+echo   Installing piper-tts 1.8.0...
+pip install --no-cache-dir piper-tts==1.8.0
+if errorlevel 1 (
+    echo   [WARN] PyPI install failed - trying local wheel...
+    if exist "%PIPER_WHEEL%" (
+        pip install --no-cache-dir "%PIPER_WHEEL%"
+    ) else (
+        echo   [WARN] Local wheel not found: %PIPER_WHEEL%
+    )
+)
+python -c "import piper" 2>nul
+if errorlevel 1 (
+    echo   [WARN] piper import check failed
+) else (
+    echo   [OK] piper 1.8 venv ready
+)
+call deactivate
+:piper_venv_done
+if exist "%ESPEAK_SRC%" (
+    if not exist "%PIPER_DIR%\espeak-ng-data" (
+        echo   Copying espeak-ng-data to %PIPER_DIR%\espeak-ng-data...
+        xcopy /E /I /Y "%ESPEAK_SRC%" "%PIPER_DIR%\espeak-ng-data" >nul
+    ) else (
+        echo   espeak-ng-data already present
+    )
+) else (
+    echo   [WARN] espeak-ng-data source not found: %ESPEAK_SRC%
+    echo          piper-tts 1.8 wheel bundles its own copy; this external copy is a fallback
+)
+
+REM ============================================================
 REM  5. VB-Audio Virtual Cable (CABLE-A)
 REM ============================================================
 echo.
