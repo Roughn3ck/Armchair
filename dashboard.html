@@ -201,7 +201,7 @@ body {
 <div id="settingsBody" style="display:none;">
 <div class="config-row">
 <label>LLM Provider:</label>
-<select id="cfgLLMProvider" onchange="onProviderChange()">
+<select id="cfgLLMProvider" onchange="onProviderChange(true)">
 <option value="ollama">Ollama (local, free)</option>
 <option value="openai">OpenAI</option>
 <option value="anthropic">Anthropic</option>
@@ -276,8 +276,9 @@ let lastTranscript = '';
 let knownSpeakers = {};
 let agentConfig = {};
 let currentMode = 'listen';
+let providerTouched = false;
 
-function setMode(mode) {
+function setMode(mode, persist) {
     currentMode = mode;
     document.querySelectorAll('.mode-btn').forEach(b => {
         b.className = 'mode-btn';
@@ -285,6 +286,9 @@ function setMode(mode) {
     if (mode === 'listen') document.getElementById('btnListen').className = 'mode-btn active-listen';
     else document.getElementById('btnTalk').className = 'mode-btn active-talk';
 
+    // Persist ONLY on an explicit user toggle. Page init / status sync must not
+    // write mode.txt (that clobbered a saved 'talk' mode on dashboard load).
+    if (persist === false) return;
     fetch('/api/mode', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -359,12 +363,30 @@ function toggleSettings() {
     }
 }
 
-function onProviderChange() {
+function updateProviderVisibility() {
     const provider = document.getElementById('cfgLLMProvider').value;
     // Show API key for all except ollama
     document.getElementById('rowAPIKey').style.display = provider === 'ollama' ? 'none' : '';
     // Show ollama host:port only for ollama
     document.getElementById('rowOllamaHost').style.display = provider === 'ollama' ? '' : 'none';
+}
+
+// Restore a provider selection captured before a test/save request. A stale
+// config echo (status poll) must never alter the user's chosen provider.
+function assertProviderSelection(provider) {
+    const sel = document.getElementById('cfgLLMProvider');
+    if (sel.value !== provider) {
+        sel.value = provider;
+        onProviderChange();
+    } else {
+        updateProviderVisibility();
+    }
+}
+
+function onProviderChange(userInitiated) {
+    const provider = document.getElementById('cfgLLMProvider').value;
+    if (userInitiated) providerTouched = true;
+    updateProviderVisibility();
     // Update model placeholder based on provider
     const modelInput = document.getElementById('cfgLLMModel');
     const placeholders = {
@@ -416,10 +438,12 @@ function testLLM() {
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({provider: provider, model: model, api_key: apiKey, use_env_key: useEnvKey, host: host, port: port})
     }).then(r => r.json()).then(data => {
+        assertProviderSelection(provider);
         btn.textContent = data.ok ? '✓ OK' : '✗ Fail';
         btn.style.color = data.ok ? 'var(--em-green)' : 'var(--em-red)';
         setTimeout(() => { btn.textContent = 'Test'; btn.style.color = ''; }, 3000);
     }).catch(() => {
+        assertProviderSelection(provider);
         btn.textContent = '✗ Fail'; btn.style.color = 'var(--em-red)';
         setTimeout(() => { btn.textContent = 'Test'; btn.style.color = ''; }, 3000);
     });
@@ -441,6 +465,7 @@ function saveAndTest() {
             document.getElementById('cfgAPIKey').placeholder = 'Saved ✓';
         }
     }).catch(() => {}).finally(() => {
+        assertProviderSelection(provider);
         btn.textContent = 'Save & Test'; btn.style.color = '';
         testLLM();
     });
@@ -526,7 +551,7 @@ async function update() {
         }
 
         if (data.mode && data.mode !== currentMode) {
-            setMode(data.mode);
+            setMode(data.mode, false);
         }
 
         if (data.agent_config) {
@@ -551,10 +576,13 @@ async function update() {
                 document.getElementById('cfgMemoryDir').value = agentConfig.memory_dir || '';
             }
             // Settings panel sync
-            if (agentConfig.llm_provider && document.getElementById('cfgLLMProvider').value !== agentConfig.llm_provider) {
+            if (agentConfig.llm_provider && !providerTouched && document.getElementById('cfgLLMProvider').value !== agentConfig.llm_provider) {
                 document.getElementById('cfgLLMProvider').value = agentConfig.llm_provider;
                 onProviderChange();
             }
+            // Always re-assert key/host row visibility (browser may restore the
+            // select value on reload without firing onchange -> row stayed hidden)
+            updateProviderVisibility();
             if (agentConfig.llm_model && document.activeElement !== document.getElementById('cfgLLMModel')) {
                 document.getElementById('cfgLLMModel').value = agentConfig.llm_model;
             }
@@ -633,7 +661,7 @@ function copyTranscript() {
     });
 }
 
-setMode('listen');
+setMode('listen', false);
 populateVoices();
 setInterval(update, 2000);
 update();
