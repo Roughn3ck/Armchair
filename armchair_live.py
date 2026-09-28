@@ -1480,14 +1480,14 @@ def main():
     last_think_time = 0
     convo_until = 0.0  # follow-up window: name said once opens the conversation
     try:
-        FOLLOWUP_TIMEOUT = int(env('FOLLOWUP_TIMEOUT', '60') or 60)
+        FOLLOWUP_TIMEOUT = int(env('FOLLOWUP_TIMEOUT', '0') or 0)
     except ValueError:
-        FOLLOWUP_TIMEOUT = 60
+        FOLLOWUP_TIMEOUT = 0
     agent_spoken = deque(maxlen=6)  # (timestamp, _norm_speech(cleaned)) per reply
     echo_gate = env_bool('ECHO_GATE', True)  # discard mic audio during own playback
     THINK_INTERVAL = 4
     last_tts_sig = None  # (engine, voice, ref) — rebuild Speaker when dashboard changes it
-    last_agent_sig = (agent_name, persona)  # rebuild LLMClient when name/persona change
+    last_agent_sig = (agent_name, persona, llm_provider, llm_model)  # rebuild LLMClient when identity/provider/model change
 
     log("ARMCHAIR", "=" * 60)
     log("ARMCHAIR", f"AGENT IN THE ARMCHAIR — {agent_name} (streaming)")
@@ -1678,6 +1678,20 @@ def main():
                     # Talk mode — reply on name OR while the follow-up window is open
                     current_mode = get_mode()
                     named = agent_name.lower() in text.lower()
+
+                    # Dismissal: "thanks for your input <agent_name>" closes the
+                    # conversational window and reverts Talk -> Listen with no LLM call.
+                    if current_mode == 'talk' and (named or time.time() < convo_until) and \
+                       "thanks for your input" in text.lower() and agent_name.lower() in text.lower():
+                        log("CONVO", "Dismissed — window closed")
+                        convo_until = 0.0
+                        try:
+                            with open(MODE_FILE, 'w') as f:
+                                f.write('listen')
+                        except Exception as e:
+                            log("STATE", f"Failed to write mode file: {e}")
+                        continue
+
                     if current_mode == 'talk' and thinker and (named or time.time() < convo_until):
                         now = time.time()
                         if (now - last_think_time) >= THINK_INTERVAL:
@@ -1689,8 +1703,10 @@ def main():
 
                             # Only real replies keep the conversation open;
                             # [SILENCE] declines and window expiry close it.
+                            # FOLLOWUP_TIMEOUT=0 means the window stays open
+                            # until explicitly dismissed.
                             if response:
-                                convo_until = time.time() + FOLLOWUP_TIMEOUT
+                                convo_until = time.time() + FOLLOWUP_TIMEOUT if FOLLOWUP_TIMEOUT > 0 else float('inf')
 
                             if response:
                                 cleaned = clean_for_speech(response)
@@ -1701,21 +1717,24 @@ def main():
 
                                 agent_spoken.append((time.time(), _norm_speech(cleaned)))
 
-                                # Hot-reload agent identity (name/persona) if dashboard changed it
+                                # Hot-reload agent identity/provider/model if dashboard changed it
                                 cfg_now = get_agent_config()
                                 agent_sig = (cfg_now.get('name', AGENT_NAME_DEFAULT),
-                                             cfg_now.get('persona', AGENT_PERSONA_DEFAULT))
+                                             cfg_now.get('persona', AGENT_PERSONA_DEFAULT),
+                                             cfg_now.get('llm_provider', LLM_PROVIDER_DEFAULT),
+                                             cfg_now.get('llm_model', LLM_MODEL_DEFAULT))
                                 if agent_sig != last_agent_sig:
                                     try:
                                         new_identity = load_identity(
                                             IDENTITY_DIR, memory_dir=memory_dir,
                                             max_chars=ident_max, recent_days=ident_days,
                                             skip_files=[s for s in ident_skip.split(',') if s.strip()])
-                                        agent_name, persona = agent_sig
+                                        agent_name, persona, llm_provider, llm_model = agent_sig
                                         thinker = LLMClient(llm_provider, llm_model, agent_name, persona, new_identity)
                                         last_agent_sig = agent_sig
                                         log("ARMCHAIR", f"Agent identity reloaded -> {agent_name}")
                                         log("ARMCHAIR", f"Agent: {agent_name}")
+                                        log("ARMCHAIR", f"LLM: {llm_provider}/{llm_model}")
                                     except Exception as e:
                                         log("ARMCHAIR", f"Agent reload failed: {e}")
 
