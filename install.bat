@@ -135,10 +135,19 @@ if exist "%VENV_DIR%\kokoro\Scripts\python.exe" (
         pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128 --force-reinstall
         call :verify_torch_cuda "kokoro"
     )
+    echo   Pre-seeding spacy chain (binary wheels only - avoids old-blis source build)...
+    pip install --only-binary :all: "spacy>=3.8" "thinc>=8.3" "blis>=1.3"
     echo   Installing kokoro...
     pip install kokoro soundfile numpy
     call deactivate
-    echo [OK] Kokoro environment ready
+    "%VENV_DIR%\kokoro\Scripts\python.exe" -c "import kokoro" >nul 2>&1
+    if errorlevel 1 (
+        echo [WARN] Kokoro INCOMPLETE - import failed. To repair, activate the
+        echo        kokoro venv and run: pip install --only-binary :all: "spacy>=3.8" "thinc>=8.3" "blis>=1.3"
+        echo        then: pip install kokoro soundfile numpy
+    ) else (
+        echo [OK] Kokoro environment ready
+    )
 )
 
 REM ============================================================
