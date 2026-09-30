@@ -149,8 +149,8 @@ each strip routes to any combination of A1/B1/B2, and each bus is one listener's
 | Listener | Hears | Never hears |
 |---|---|---|
 | **You** (A1 → speakers) | agent TTS + remote caller | your own voice |
-| **Agent / pipeline** (B1 → `Voicemeeter Output` recording device) | you + remote caller | its own TTS |
-| **Remote caller** (B2 → `Voicemeeter AUX Output` recording device) | you + agent TTS | their own voice |
+| **Agent / pipeline** (B1 → `Voicemeeter Out B1` recording device) | you + remote caller | its own TTS |
+| **Remote caller** (B2 → `Voicemeeter Out B2` recording device) | you + agent TTS | their own voice |
 
 **No Windows "Listen to this device" anywhere.** Listen re-plays audio through a second,
 delayed path — a delayed duplicate of audio Voicemeeter already routes is an echo, and with
