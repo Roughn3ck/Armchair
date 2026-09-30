@@ -9,6 +9,7 @@ TRANSCRIPT = '/tmp/armchair/transcript.txt'
 LATENCY_FILE = '/tmp/armchair/latency.txt'
 MODE_FILE = '/tmp/armchair/mode.txt'
 PREWARM_FILE = '/tmp/armchair/tts_prewarm.txt'
+APPLY_FILE = '/tmp/armchair/apply_settings.txt'
 SPEAKER_NAMES_FILE = '/tmp/armchair/speaker_names.json'
 DETECTED_SPEAKERS_FILE = '/tmp/armchair/detected_speakers.json'
 AGENT_CONFIG_FILE = '/tmp/armchair/agent_config.json'
@@ -199,6 +200,9 @@ class ArmchairHandler(http.server.SimpleHTTPRequestHandler):
             body = self._read_body()
             try:
                 data = json.loads(body)
+                # Empty llm_model/llm_provider must never wipe the saved
+                # values (the UI clears the model field on provider switch)
+                data = {k: v for k, v in data.items() if not (k in ('llm_model', 'llm_provider') and not v)}
                 # Merge with existing config
                 existing = {}
                 try:
@@ -231,6 +235,10 @@ class ArmchairHandler(http.server.SimpleHTTPRequestHandler):
                 env_key = key_map.get(provider, '')
                 if not env_key:
                     self._send_json({'error': f'Unknown provider: {provider}'}, 400)
+                    return
+                if not key:
+                    # Never clobber a stored key with an empty write
+                    self._send_json({'ok': False, 'error': 'No key provided — stored key left unchanged'}, 400)
                     return
                 # Append/update .env file
                 env_path = os.path.join(os.path.dirname(__file__), '.env')
@@ -289,7 +297,7 @@ class ArmchairHandler(http.server.SimpleHTTPRequestHandler):
                     req = ur.Request("https://api.anthropic.com/v1/messages", data=test_payload,
                                      headers={"Content-Type": "application/json", "x-api-key": api_key, "anthropic-version": "2023-06-01"})
                     try:
-                        with ur.urlopen(req, timeout=10) as resp:
+                        with ur.urlopen(req, timeout=20) as resp:
                             self._send_json({"ok": True, "message": "Anthropic connection successful"})
                     except urllib.error.HTTPError as e:
                         self._send_json({"ok": False, "error": f"HTTP {e.code}: {e.reason}"})
@@ -316,7 +324,7 @@ class ArmchairHandler(http.server.SimpleHTTPRequestHandler):
                         headers['X-Title'] = 'Armchair Test'
                     req = ur.Request(endpoint, data=test_payload, headers=headers)
                     try:
-                        with ur.urlopen(req, timeout=10) as resp:
+                        with ur.urlopen(req, timeout=20) as resp:
                             self._send_json({"ok": True, "message": f"{provider} connection successful"})
                     except urllib.error.HTTPError as e:
                         self._send_json({"ok": False, "error": f"HTTP {e.code}: {e.reason}"})
@@ -324,6 +332,17 @@ class ArmchairHandler(http.server.SimpleHTTPRequestHandler):
                         self._send_json({"ok": False, "error": str(e)[:200]})
             except Exception as e:
                 self._send_json({"error": str(e)}, 500)
+
+        elif self.path == '/api/apply-settings':
+            # Explicit "Apply Settings" button — writes the signal file the
+            # pipeline's watcher flags; the main loop rebuilds identity/LLM/TTS
+            try:
+                with open(APPLY_FILE, 'w') as f:
+                    f.write('apply')
+                print('[DASHBOARD] Settings apply requested')
+                self._send_json({'ok': True, 'message': 'Apply signal sent to pipeline'})
+            except Exception as e:
+                self._send_json({'error': str(e)}, 500)
 
         elif self.path == '/api/tts-prewarm':
             body = self._read_body()

@@ -163,6 +163,7 @@ TRANSCRIPT_FILE = "/tmp/armchair/transcript.txt"
 LATENCY_FILE = "/tmp/armchair/latency.txt"
 MODE_FILE = "/tmp/armchair/mode.txt"
 PREWARM_FILE = "/tmp/armchair/tts_prewarm.txt"
+APPLY_FILE = "/tmp/armchair/apply_settings.txt"
 SPEAKER_NAMES_FILE = "/tmp/armchair/speaker_names.json"
 DETECTED_SPEAKERS_FILE = "/tmp/armchair/detected_speakers.json"
 AGENT_CONFIG_FILE = "/tmp/armchair/agent_config.json"
@@ -1517,6 +1518,11 @@ def main():
     silence_counter = 0
     SILENCE_TIMEOUT = 2  # seconds of silence before committing utterance
 
+    # Apply-settings flag — the watcher thread sets it when the dashboard
+    # signals; the MAIN loop performs the rebuild (thinker/speaker are
+    # main-thread-owned; dict mutation crosses threads without locks)
+    apply_flag = {'pending': False}
+
     # Prewarm watcher — dashboard writes engine name to PREWARM_FILE to
     # load a TTS model in the background before it's needed
     def prewarm_watcher():
@@ -1546,11 +1552,53 @@ def main():
                 pass
             except Exception as e:
                 log("TTS", f"Prewarm error: {e}")
+            # Apply-settings signal: flag only — the main loop rebuilds
+            if os.path.exists(APPLY_FILE):
+                try:
+                    os.remove(APPLY_FILE)
+                except OSError:
+                    pass
+                apply_flag['pending'] = True
             time.sleep(1.0)
 
     threading.Thread(target=prewarm_watcher, daemon=True).start()
 
     while running:
+        # Apply-settings signal from the dashboard ("Apply Settings" button).
+        # The response-path hot-reload can deadlock: a renamed agent never
+        # passes the OLD name's gate, and a broken LLM never completes a
+        # response — the only two paths that used to apply changes. This
+        # check runs every iteration, gated on nothing.
+        if apply_flag['pending']:
+            apply_flag['pending'] = False
+            try:
+                cfg_now = get_agent_config()
+                new_sig = (cfg_now.get('name', AGENT_NAME_DEFAULT),
+                           cfg_now.get('persona', AGENT_PERSONA_DEFAULT),
+                           cfg_now.get('llm_provider', LLM_PROVIDER_DEFAULT),
+                           cfg_now.get('llm_model', LLM_MODEL_DEFAULT))
+                new_tts_sig = (cfg_now.get('tts_engine', TTS_ENGINE_DEFAULT),
+                               cfg_now.get('voice', TTS_VOICE_DEFAULT),
+                               cfg_now.get('tts_reference', CHATTERBOX_REF_DEFAULT))
+                if new_sig != last_agent_sig:
+                    new_identity = load_identity(
+                        IDENTITY_DIR, memory_dir=memory_dir,
+                        max_chars=ident_max, recent_days=ident_days,
+                        skip_files=[s for s in ident_skip.split(',') if s.strip()])
+                    agent_name, persona, llm_provider, llm_model = new_sig
+                    thinker = LLMClient(llm_provider, llm_model, agent_name, persona, new_identity)
+                    last_agent_sig = new_sig
+                    log("ARMCHAIR", f"Settings applied -> Agent: {agent_name}")
+                    log("ARMCHAIR", f"LLM: {llm_provider}/{llm_model}")
+                if speaker and new_tts_sig != last_tts_sig:
+                    speaker = Speaker(new_tts_sig[1], engine=new_tts_sig[0], tts_reference=new_tts_sig[2])
+                    last_tts_sig = new_tts_sig
+                    log("TTS", f"Applied voice/engine -> {new_tts_sig[0]} ({new_tts_sig[1] if new_tts_sig[0]=='piper' else 'cloned'})")
+                if new_sig == last_agent_sig and (not speaker or new_tts_sig == last_tts_sig):
+                    log("ARMCHAIR", "Apply: settings already current")
+            except Exception as e:
+                log("ARMCHAIR", f"Apply settings failed: {e}")
+
         # Read audio from the stream
         audio = reader.read()
         if audio is None:

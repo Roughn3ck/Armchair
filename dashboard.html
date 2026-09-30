@@ -214,13 +214,17 @@ body {
 </div>
 <div class="config-row" id="rowLLMModel">
 <label>Model:</label>
-<input type="text" id="cfgLLMModel" placeholder="deepseek-v4-flash:cloud" onchange="saveAgentConfig()">
+<input type="text" id="cfgLLMModel" placeholder="qwen3.8:latest" onchange="saveAgentConfig()">
 </div>
 <div class="config-row" id="rowAPIKey" style="display:none;">
 <label>API Key:</label>
 <input type="password" id="cfgAPIKey" placeholder="Blank = use .env key" onchange="saveAPIKey()">
+</div>
+<div class="config-row" id="rowLLMTest">
+<label>&nbsp;</label>
 <button class="save-btn" onclick="testLLM()" id="btnTestLLM">Test</button>
 <button class="save-btn" onclick="saveAndTest()" id="btnSaveTestLLM">Save &amp; Test</button>
+<button class="save-btn" onclick="applySettings()" id="btnApplySettings" title="Push all settings to the live pipeline now">Apply Settings</button>
 </div>
 <div class="config-row" id="rowOllamaHost" style="display:none;">
 <label>Ollama Host:</label>
@@ -311,7 +315,7 @@ function saveAgentConfig() {
     const modelVal = document.getElementById('cfgLLMModel').value.trim();
     if (modelVal) config.llm_model = modelVal;
     if (refVal.trim()) config.tts_reference = refVal.trim();
-    fetch('/api/agent-config', {
+    return fetch('/api/agent-config', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(config)
@@ -369,6 +373,8 @@ function updateProviderVisibility() {
     document.getElementById('rowAPIKey').style.display = provider === 'ollama' ? 'none' : '';
     // Show ollama host:port only for ollama
     document.getElementById('rowOllamaHost').style.display = provider === 'ollama' ? '' : 'none';
+    // Test works for every provider; Save & Test needs a key (ollama has none)
+    document.getElementById('btnSaveTestLLM').style.display = provider === 'ollama' ? 'none' : '';
 }
 
 // Restore a provider selection captured before a test/save request. A stale
@@ -390,7 +396,7 @@ function onProviderChange(userInitiated) {
     // Update model placeholder based on provider
     const modelInput = document.getElementById('cfgLLMModel');
     const placeholders = {
-        'ollama': 'deepseek-v4-flash:cloud',
+        'ollama': 'qwen3.8:latest',
         'openai': 'gpt-4o',
         'anthropic': 'claude-sonnet-4-6',
         'tokenra': 'glm-5.3-flash',
@@ -400,19 +406,20 @@ function onProviderChange(userInitiated) {
         'minimax': 'MiniMax-M2',
     };
     modelInput.placeholder = placeholders[provider] || '';
-    // Placeholder is display-only: don't auto-save when the field is empty or
-    // still shows the placeholder text (would write it into agent_config.json).
-    const modelVal = modelInput.value.trim();
-    if (modelVal && modelVal !== modelInput.placeholder) {
-        saveAgentConfig();
-    }
+    // Clear a stale model from the previous provider (an ollama ':cloud' name
+    // tested against tokenra is a 404 that reads like an endpoint failure).
+    // The backend ignores an empty llm_model, so the saved model survives
+    // until the user picks one for the new provider.
+    if (userInitiated) modelInput.value = '';
+    saveAgentConfig();
 }
 
 function saveAPIKey() {
     // API key goes to a separate endpoint — stored in .env, not agent_config.json
     const provider = document.getElementById('cfgLLMProvider').value;
     const key = document.getElementById('cfgAPIKey').value;
-    fetch('/api/save-api-key', {
+    if (!key) return;  // never clobber the stored key with an empty save
+    return fetch('/api/save-api-key', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({provider: provider, key: key})
@@ -441,19 +448,26 @@ function testLLM() {
         assertProviderSelection(provider);
         btn.textContent = data.ok ? '✓ OK' : '✗ Fail';
         btn.style.color = data.ok ? 'var(--em-green)' : 'var(--em-red)';
+        btn.title = (data.ok ? 'OK' : (data.error || 'failed')) + ' — tested ' + provider + '/' + model;
         setTimeout(() => { btn.textContent = 'Test'; btn.style.color = ''; }, 3000);
     }).catch(() => {
         assertProviderSelection(provider);
         btn.textContent = '✗ Fail'; btn.style.color = 'var(--em-red)';
+        btn.title = 'request failed — tested ' + provider + '/' + model;
         setTimeout(() => { btn.textContent = 'Test'; btn.style.color = ''; }, 3000);
     });
 }
 
 function saveAndTest() {
-    // Save the key to .env, then immediately test (falls back to .env when the field is blank)
+    // Save the key to .env, then immediately test. Blank field = nothing new
+    // to save — skip straight to the test (which falls back to the .env key).
     const btn = document.getElementById('btnSaveTestLLM');
     const provider = document.getElementById('cfgLLMProvider').value;
     const key = document.getElementById('cfgAPIKey').value;
+    if (!key) {
+        testLLM();
+        return;
+    }
     btn.textContent = 'Saving...'; btn.style.color = 'var(--em-amber)';
     fetch('/api/save-api-key', {
         method: 'POST',
@@ -468,6 +482,28 @@ function saveAndTest() {
         assertProviderSelection(provider);
         btn.textContent = 'Save & Test'; btn.style.color = '';
         testLLM();
+    });
+}
+
+function applySettings() {
+    const btn = document.getElementById('btnApplySettings');
+    btn.textContent = 'Applying...'; btn.style.color = 'var(--em-amber)';
+    // Deterministic order: persist any typed key + the config fields FIRST,
+    // then signal the pipeline. A bare signal can race the async saves and
+    // rebuild from stale config (observed 2026-09-30: agent-name swap failed
+    // while provider/model swaps — saved earlier — succeeded).
+    Promise.resolve()
+        .then(() => saveAPIKey())
+        .then(() => saveAgentConfig())
+        .then(() => fetch('/api/apply-settings', {method: 'POST'}))
+        .then(r => r.json()).then(data => {
+        btn.textContent = data.ok ? '✓ Applied' : '✗ Fail';
+        btn.style.color = data.ok ? 'var(--em-green)' : 'var(--em-red)';
+        if (!data.ok && data.error) btn.title = data.error;
+        setTimeout(() => { btn.textContent = 'Apply Settings'; btn.style.color = ''; }, 3000);
+    }).catch(() => {
+        btn.textContent = '✗ Fail'; btn.style.color = 'var(--em-red)';
+        setTimeout(() => { btn.textContent = 'Apply Settings'; btn.style.color = ''; }, 3000);
     });
 }
 
