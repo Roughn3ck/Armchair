@@ -80,6 +80,11 @@ def _scan_voices():
     return sorted(voices)
 
 
+def _ui_version():
+    """mtime-based version stamp for dashboard.html; changes on every deploy."""
+    return str(int(os.path.getmtime(os.path.join(_SCRIPT_DIR, 'dashboard.html'))))
+
+
 class ArmchairHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
@@ -138,6 +143,7 @@ class ArmchairHandler(http.server.SimpleHTTPRequestHandler):
                 'speaker_names': speaker_names,
                 'detected_speakers': detected_speakers,
                 'agent_config': agent_config,
+                'ui_version': _ui_version(),
                 'time': time.strftime('%H:%M:%S')
             })
 
@@ -149,11 +155,15 @@ class ArmchairHandler(http.server.SimpleHTTPRequestHandler):
             self._send_json({'voices': _VOICES_CACHE['voices']})
 
         elif self.path == '/' or self.path == '/index.html':
+            dashboard_path = os.path.join(_SCRIPT_DIR, 'dashboard.html')
             self.send_response(200)
             self.send_header('Content-Type', 'text/html')
+            self.send_header('Cache-Control', 'no-store')
             self.end_headers()
-            with open(os.path.join(_SCRIPT_DIR, 'dashboard.html'), 'rb') as f:
-                self.wfile.write(f.read())
+            with open(dashboard_path, 'rb') as f:
+                html = f.read()
+            html = html.replace(b'__UI_VERSION__', _ui_version().encode())
+            self.wfile.write(html)
         elif self.path.startswith('/dashboard/assets/'):
             # Serve branded assets (logo, etc.) from dashboard/assets/
             asset_path = os.path.join(_SCRIPT_DIR, self.path.lstrip('/'))

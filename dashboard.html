@@ -281,6 +281,7 @@ let knownSpeakers = {};
 let agentConfig = {};
 let currentMode = 'listen';
 let providerTouched = false;
+const UI_VERSION = '__UI_VERSION__';
 
 function setMode(mode, persist) {
     currentMode = mode;
@@ -581,6 +582,15 @@ async function update() {
     try {
         const r = await fetch('/api/status');
         const data = await r.json();
+
+        if (data.ui_version && data.ui_version !== UI_VERSION) {
+            // A newer dashboard.html is deployed — refresh this tab automatically
+            const t = document.createElement('div');
+            t.textContent = 'Dashboard updated — reloading...';
+            t.style.cssText = 'position:fixed;bottom:16px;right:16px;background:#2a2a2a;color:#fff;padding:8px 14px;border-radius:6px;z-index:9999;font-size:13px;';
+            document.body.appendChild(t);
+            setTimeout(() => location.reload(), 1500);
+        }
 
         if (data.latency) {
             document.getElementById('latency').innerHTML = `Process: <span>${data.latency}</span>`;
