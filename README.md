@@ -177,10 +177,19 @@ and the device names are identical.
 | Setting | Value |
 |---|---|
 | Windows default playback | `CABLE-A Input` — TTS plays here, arrives on the CABLE-A Output strip |
-| Windows default recording | `Voicemeeter Output` (B1) |
-| Call app microphone | `Voicemeeter AUX Output` (**B2**) — explicit, not "System default" |
-| Call app speaker | `Voicemeeter Input` (VAIO) — explicit, not "System default" |
+| Windows default recording | `Voicemeeter Out B1 (VB-Audio Voicemeeter VAIO)` (B1) — older drivers: `Voicemeeter Output` |
+| Call app microphone | `Voicemeeter Out B2 (VB-Audio Voicemeeter VAIO)` (**B2**) — explicit, not "System default". CONFIRMED 2026-09-30 live call (caller hears you + agent). Older drivers: `Voicemeeter AUX Output` |
+| Call app speaker | `Voicemeeter Input (VB-Audio Voicemeeter VAIO)` (VAIO) — explicit, not "System default" |
 | "Listen to this device" | **UNCHECKED on every recording device** |
+
+> **Device-name variance (2026-09-30, Alan-call lesson):** VB-Audio virtual driver
+> generations name the Voicemeeter bus taps differently. Newer driver (current
+> install): recording endpoints `Voicemeeter Out B1 / B2 / B3`. Classic driver:
+> `Voicemeeter Output` / `Voicemeeter AUX Output`. The bus function is identical —
+> only the labels move. Before configuring Windows defaults or any call app,
+> enumerate what YOUR system actually exposes:
+> `Get-PnpDevice -Class AudioEndpoint` (PowerShell). The call-app mic is the
+> recording endpoint ending "Out B2" (or "AUX Output" on the classic driver).
 
 #### The two red lines
 

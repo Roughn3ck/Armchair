@@ -12,8 +12,8 @@ echo ================================================
 echo.
 echo THREE LISTENERS - every Voicemeeter bus is one listener's ears:
 echo   A1  speakers                      = YOU (agent TTS + remote caller)
-echo   B1  "Voicemeeter Output" rec dev  = AGENT/PIPELINE (you + remote caller)
-echo   B2  "Voicemeeter AUX Output" rec  = REMOTE CALLER (you + agent TTS)
+echo   B1  "Voicemeeter Out B1" rec dev  = AGENT/PIPELINE (you + remote caller)
+echo   B2  "Voicemeeter Out B2" rec dev  = REMOTE CALLER (you + agent TTS) [confirmed 2026-09-30 live call]
 echo.
 echo RULE: No Windows "Listen to this device" anywhere. Voicemeeter does all routing.
 echo   (Old setup had Listen ON - it is a delayed duplicate of audio Voicemeeter
@@ -25,7 +25,7 @@ echo STEP 1: Windows Sound settings
 echo.
 echo   Playback devices: set DEFAULT to "CABLE-A Input (VB-Audio Virtual Cable A)"
 echo     (the agent's TTS plays here - it arrives on Voicemeeter's CABLE-A Output strip)
-echo   Recording devices: set DEFAULT to "Voicemeeter Output (VB-Audio Voicemeeter VAIO)"
+echo   Recording devices: set DEFAULT to "Voicemeeter Out B1 (VB-Audio Voicemeeter VAIO)"  (older drivers: "Voicemeeter Output")
 echo   Recording devices: on EACH device, Properties, Listen tab:
 echo     "Listen to this device" must be UNCHECKED on ALL of them
 echo.
@@ -51,7 +51,7 @@ echo STEP 3: Call app settings (explicit devices, not "System default")
 echo.
 echo   Open your call app (Teams, Zoom, Signal, Meet - whichever you use)
 echo   Settings, Audio / Devices
-echo   Microphone: "Voicemeeter AUX Output (VB-Audio Voicemeeter AUX VAIO)"
+echo   Microphone: "Voicemeeter Out B2 (VB-Audio Voicemeeter VAIO)"  (older drivers: "Voicemeeter AUX Output")
 echo   Speaker:    "Voicemeeter Input (VB-Audio Voicemeeter VAIO)"
 echo   Noise suppression: Off or Low (let Whisper handle it)
 echo.
@@ -98,7 +98,7 @@ if exist B:\armchair_test.raw (
     del B:\armchair_test.raw
 ) else (
     echo [WARNING] No audio captured. Check:
-    echo   - "Voicemeeter Output" exists as a recording device (Voicemeeter installed)
+    echo   - "Voicemeeter Out B1" (or classic "Voicemeeter Output") exists as a recording device (Voicemeeter installed)
     echo   - Voicemeeter is running - B1 is its bus
 )
 

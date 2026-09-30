@@ -6,7 +6,7 @@
 #   1. Verifies VB-Cable + Voicemeeter devices exist (Voicemeeter REQUIRED for Talk mode)
 #   2. Sets Windows default playback -> CABLE-A Input (agent TTS rides the cable to strip 2)
 #   3. Prints the manual steps it cannot safely automate:
-#      - default recording -> Voicemeeter Output (B1)
+#      - default recording -> Voicemeeter Out B1 (B1)  [older drivers: "Voicemeeter Output"]
 #      - "Listen to this device" UNCHECKED on every recording device (opens Sound panel)
 #      - the Voicemeeter strip matrix + red lines
 #      - call-app device settings
@@ -39,8 +39,10 @@ function Get-DeviceByName([string]$pattern) {
 
 $cableIn  = Get-DeviceByName "*CABLE-A Input*"
 $cableOut = Get-DeviceByName "*CABLE-A Output*"
-$vmOut    = Get-DeviceByName "*Voicemeeter Output*"
-$vmAuxOut = Get-DeviceByName "*Voicemeeter AUX Output*"
+$vmOut    = Get-DeviceByName "*Voicemeeter Out B1*"
+if (-not $vmOut) { $vmOut = Get-DeviceByName "*Voicemeeter Output*" }            # classic-driver fallback
+$vmAuxOut = Get-DeviceByName "*Voicemeeter Out B2*"
+if (-not $vmAuxOut) { $vmAuxOut = Get-DeviceByName "*Voicemeeter AUX Output*" }   # classic-driver fallback
 $vmIn     = Get-DeviceByName "*Voicemeeter Input*"
 $vmAuxIn  = Get-DeviceByName "*Voicemeeter AUX Input*"
 
