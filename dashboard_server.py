@@ -386,6 +386,7 @@ if __name__ == '__main__':
                 'llm_model': 'deepseek-v4-flash:cloud',
                 'persona': 'You are {agent_name}, a strategic advisor. Speak only when directly addressed.'
             }, f)
+    http.server.HTTPServer.allow_reuse_address = True  # survive quick restarts (WinError 10048 on TIME_WAIT)
     server = http.server.HTTPServer(('0.0.0.0', 8765), ArmchairHandler)
     print('[DASHBOARD] Agent In The Armchair on http://localhost:8765')
     print('[DASHBOARD] Mode: listen / talk')

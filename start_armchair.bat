@@ -80,12 +80,13 @@ timeout /t 2 /nobreak >nul
 
 REM --- Start dashboard server (background, no window) ---
 echo [INFO] Starting dashboard on http://localhost:8765 ...
-start /b "" "%WHISPER_PY%" "%ROOT%dashboard_server.py" >nul 2>&1
+start /b "" "%WHISPER_PY%" "%ROOT%dashboard_server.py" >"%PARENT%\armchair_tmp\dashboard.log" 2>&1
 timeout /t 1 /nobreak >nul
 powershell -NoProfile -Command "try { $null = Invoke-WebRequest -Uri 'http://localhost:8765/api/status' -UseBasicParsing -TimeoutSec 3; exit 0 } catch { exit 1 }" >nul 2>&1
 if errorlevel 1 (
     echo [WARN] Dashboard did not respond on port 8765. Something else may be holding the port.
     echo        Check with: netstat -ano ^| findstr :8765
+    echo        Traceback (if any): %PARENT%\armchair_tmp\dashboard.log
 ) else (
     echo [OK] Dashboard is up.
 )
