@@ -102,7 +102,7 @@ echo ================================================================
 echo   TO STOP: Press Ctrl+C, then answer N when asked
 echo            "Terminate batch job (Y/N)?" - cleanup runs and the
 echo            window closes by itself. (Answering Y also closes the
-echo            window, but skips cleanup until the next start.)
+echo            window — the pipeline now cleans up its helpers either way.)
 echo ================================================================
 echo.
 "%WHISPER_PY%" "%ROOT%armchair_live.py" %*

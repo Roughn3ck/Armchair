@@ -1596,6 +1596,22 @@ def main():
 
     signal.signal(signal.SIGINT, signal_handler)
 
+    # On ANY exit — including a Ctrl+C whose batch prompt is answered "Y",
+    # which skips start_armchair.bat's own cleanup — kill launcher helpers so
+    # they don't linger holding the console window open (the stranded-console bug).
+    def _cleanup_helpers():
+        if os.name != 'nt':
+            return
+        try:
+            subprocess.run(['taskkill', '/f', '/im', 'ffmpeg.exe'], capture_output=True)
+            subprocess.run(
+                ['powershell', '-NoProfile', '-Command',
+                 'Get-CimInstance Win32_Process -Filter "Name=\'python.exe\'" | Where-Object { $_.CommandLine -like "*dashboard_server.py*" -or $_.CommandLine -like "*chatterbox_worker.py*" -or $_.CommandLine -like "*kokoro_worker.py*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }'],
+                capture_output=True)
+        except Exception:
+            pass
+    atexit.register(_cleanup_helpers)
+
     silence_counter = 0
     SILENCE_TIMEOUT = 2  # seconds of silence before committing utterance
 
