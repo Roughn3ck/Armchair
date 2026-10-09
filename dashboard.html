@@ -226,6 +226,10 @@ body {
 <button class="save-btn" onclick="saveAndTest()" id="btnSaveTestLLM">Save &amp; Test</button>
 <button class="save-btn" onclick="applySettings()" id="btnApplySettings" title="Push all settings to the live pipeline now">Apply Settings</button>
 </div>
+<div class="config-row">
+<label>&nbsp;</label>
+<span style="color: var(--em-text-faint); font-size: 12px;">Name, workspace, voice and LLM changes reach the running agent after clicking <b>Apply Settings</b>.</span>
+</div>
 <div class="config-row" id="rowOllamaHost" style="display:none;">
 <label>Ollama Host:</label>
 <input type="text" id="cfgOllamaHost" value="localhost" onchange="saveAgentConfig()" style="max-width: 120px; flex: 0 0 120px;">

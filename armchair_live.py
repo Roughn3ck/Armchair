@@ -1662,8 +1662,9 @@ def main():
                                cfg_now.get('voice', TTS_VOICE_DEFAULT),
                                cfg_now.get('tts_reference', CHATTERBOX_REF_DEFAULT))
                 if new_sig != last_agent_sig:
+                    md = cfg_now.get('memory_dir', memory_dir)
                     new_identity = load_identity(
-                        IDENTITY_DIR, memory_dir=memory_dir,
+                        IDENTITY_DIR, memory_dir=md,
                         max_chars=ident_max, recent_days=ident_days,
                         skip_files=[s for s in ident_skip.split(',') if s.strip()])
                     agent_name, persona, llm_provider, llm_model = new_sig
