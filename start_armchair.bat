@@ -86,7 +86,7 @@ powershell -NoProfile -Command "try { $null = Invoke-WebRequest -Uri 'http://loc
 if errorlevel 1 (
     echo [WARN] Dashboard did not respond on port 8765. Something else may be holding the port.
     echo        Check with: netstat -ano ^| findstr :8765
-    echo        Traceback (if any): %PARENT%\armchair_tmp\dashboard.log
+    echo        Traceback if any: %PARENT%\armchair_tmp\dashboard.log
 ) else (
     echo [OK] Dashboard is up.
 )
