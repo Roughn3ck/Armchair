@@ -87,7 +87,15 @@ REM ============================================================
 echo.
 echo [1/5] Creating Whisper environment...
 if exist "%VENV_DIR%\whisper\Scripts\python.exe" (
-    echo   Already exists, skipping. Delete to recreate.
+    echo   Already exists - refreshing deps idempotently...
+    call "%VENV_DIR%\whisper\Scripts\activate.bat"
+    pip install whisperx
+    if errorlevel 1 (
+        echo   [WARN] whisperx install failed - native word timestamps will be used
+    ) else (
+        echo   [OK] whisperx available
+    )
+    call deactivate
 ) else (
     echo   Creating venv...
     python -m venv "%VENV_DIR%\whisper"
@@ -112,6 +120,10 @@ if exist "%VENV_DIR%\whisper\Scripts\python.exe" (
     )
     echo   Installing faster-whisper, pyannote-audio...
     pip install faster-whisper pyannote-audio soundfile numpy
+    pip install whisperx
+    if errorlevel 1 (
+        echo   [WARN] whisperx install failed - native word timestamps will be used
+    )
     call deactivate
     echo [OK] Whisper environment ready
 )

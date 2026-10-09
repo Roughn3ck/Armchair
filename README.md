@@ -229,6 +229,30 @@ One-click from PowerShell:
 ```
 Opens audio capture, dashboard (`http://localhost:8765`), browser, and pipeline in one window. Ctrl+C stops and saves the session.
 
+## STT — word-level speaker attribution (WhisperX)
+
+The pipeline layers two speaker-attribution modes, both producing per-word votes
+against the rolling pyannote diarization:
+
+- **WhisperX forced alignment** (default when installed): a wav2vec2 CTC model
+  re-aligns the transcript to the audio for tight word timings — sharper than
+  whisper's native cross-attention timestamps. Loaded at transcriber init; the
+  first run downloads the alignment model to the HF cache (one-time).
+- **Native fallback**: faster-whisper's `word_timestamps=True` output — zero
+  extra deps, same word-voting merge.
+
+Either way, each transcript block is attributed by **word-count voting**: every
+word's time-center votes for the diarization speaker covering it. When a second
+voice takes ≥35% of the vote (and ≥2 words), the block is flagged **Multiple**
+instead of misattributed. Per-block corrections happen in the dashboard — a
+dropdown on every block (detected speakers + Multiple), persisted to
+`/tmp/armchair/block_speakers.json` and applied both to the display and to the
+agent's LLM context.
+
+Knobs (`.env`): `STT_WHISPERX=1` (default on; `0` forces native words),
+`DIAR_BUFFER_SECONDS=16` (rolling diarization window — longer = stabler speaker
+embeddings, more VRAM).
+
 ## Latency
 
 | Step | Time |

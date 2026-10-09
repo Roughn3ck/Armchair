@@ -28,6 +28,7 @@ pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
 
 echo " [2/4] faster-whisper + soundfile + numpy..."
 pip install faster-whisper soundfile numpy
+pip install whisperx || echo " [WARN] whisperx install failed - native word timestamps will be used"
 
 echo " [3/4] piper-tts (the piper CLI)..."
 pip install piper-tts

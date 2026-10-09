@@ -1,5 +1,13 @@
 # STATUS — Agent In The Armchair
 
+## 2026-10-09 — v2.9: speaker attribution overhaul + WhisperX layering + per-block speaker control
+
+- **Word-voted attribution**: blocks were previously attributed to whoever spoke at the segment's START instant — now every word's time-center votes for the diarization speaker covering it (or full-range overlap scoring when word data is absent). **Auto-`Multiple`**: a second voice ≥35% of the vote (≥2 words / ≥0.5s) flags the block instead of guessing.
+- **WhisperX forced alignment** (optional layer): wav2vec2 CTC re-alignment overwrites native whisper word timings for tighter attribution; graceful fallback to faster-whisper `word_timestamps`. Knob: `STT_WHISPERX=1` (default on when importable).
+- **Per-block speaker dropdown** (dashboard): detected speakers + "Multiple" per transcript block, persisted to `block_speakers.json`; overrides now apply to the display AND the agent's LLM context (`think()` rewrites the recent-transcript speaker labels from the overrides map before the LLM call).
+- **`DIAR_BUFFER_SECONDS`** env knob (default 16s rolling diarization window; longer = stabler speaker embeddings, more VRAM).
+- Installers: whisper venv step installs/refreshes whisperx idempotently — the Windows skip-branch now refreshes an existing venv instead of demanding delete-to-recreate (Windows + Linux installers).
+
 ## 2026-09-18 — Layer 1: STT vocab biasing, endpoint knob, event-driven diarization, `[METRIC]` instrumentation
 
 Three env knobs, no default behavior change. A/B via console `[METRIC]` lines.
@@ -8,7 +16,7 @@ Three env knobs, no default behavior change. A/B via console `[METRIC]` lines.
 - **`ENDPOINT_SILENCE_MS`** — Silero hangover: ms of silence after the last voiced frame that finalizes an utterance. Default `0` = legacy behavior (first silent 32 ms frame ends speech). `[METRIC] endpoint_delay_ms=<X>` per utterance; raise the knob and watch the metric to trade snappiness for fewer mid-utterance cuts.
 - **Event-driven diarization** — pyannote now re-runs **on utterance endpoint** so speaker labels land with the speech. `DIARIZE_INTERVAL` is now refresh-only (keeps long open monologues labeled mid-way); no wall-clock re-runs while idle. `[METRIC] diar_lag_ms=<X>` = ms from endpoint fire to labels applied.
 
-## Current Version: v2.8 (single voices dir + identity curation) — WORKING
+## Current Version: v2.9 (WhisperX word-level attribution + per-block speaker control) — WORKING
 
 ## Verified Live (2026-09-05 — audio routing v2: three-listener matrix, echo killed)
 

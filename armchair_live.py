@@ -165,6 +165,7 @@ MODE_FILE = "/tmp/armchair/mode.txt"
 PREWARM_FILE = "/tmp/armchair/tts_prewarm.txt"
 APPLY_FILE = "/tmp/armchair/apply_settings.txt"
 SPEAKER_NAMES_FILE = "/tmp/armchair/speaker_names.json"
+BLOCK_SPEAKERS_FILE = "/tmp/armchair/block_speakers.json"
 DETECTED_SPEAKERS_FILE = "/tmp/armchair/detected_speakers.json"
 AGENT_CONFIG_FILE = "/tmp/armchair/agent_config.json"
 TTS_PLAYBACK_DIR = _pf.session_log_dir.rsplit('/', 1)[0] if _pf.name != 'windows' else os.path.dirname(_pf.session_log_dir)
@@ -606,6 +607,21 @@ class StreamingTranscriber:
         self.model = WhisperModel(model_name, device=device, compute_type=compute_type)
         log("STT", "Model loaded")
 
+        # WhisperX forced alignment (optional layer): a wav2vec2 CTC model re-aligns
+        # the transcript for tighter word timings than whisper's native cross-attention
+        # DTW. Falls back to native word timestamps when unavailable. Knob: STT_WHISPERX=0
+        self.align_model = None
+        self.align_metadata = None
+        self.align_device = device
+        if env_bool('STT_WHISPERX', True):
+            try:
+                import whisperx
+                log("STT", "WhisperX available - loading align model (en)...")
+                self.align_model, self.align_metadata = whisperx.load_align_model(language_code='en', device=device)
+                log("STT", "WhisperX align model ready")
+            except Exception as e:
+                log("STT", f"WhisperX not active - native word timestamps: {e}")
+
         # Vocab biasing: prime the decoder with house vocabulary (wake name +
         # pack words). Read once at init like WHISPER_MODEL. Empty disables.
         self.initial_prompt = env('WHISPER_INITIAL_PROMPT', WHISPER_INITIAL_PROMPT_DEFAULT)
@@ -661,8 +677,26 @@ class StreamingTranscriber:
                         result.append({
                             'start': seg.start,
                             'end': seg.end,
-                            'text': text
+                            'text': text,
+                            # Native word timings (whisper cross-attention). WhisperX
+                            # re-alignment below overwrites these with tighter CTC times.
+                            'words': [(w.start, w.end) for w in (seg.words or [])],
                         })
+            if self.align_model and result:
+                try:
+                    import whisperx
+                    aligned = whisperx.align(
+                        [{'text': r['text']} for r in result],
+                        self.align_model, self.align_metadata,
+                        self.audio_buffer, self.align_device)
+                    a_segs = aligned.get('segments', [])
+                    if len(a_segs) == len(result):
+                        for r, a in zip(result, a_segs):
+                            ws = a.get('words') or []
+                            if ws:
+                                r['words'] = [(w['start'], w['end']) for w in ws]
+                except Exception as e:
+                    log("STT", f"whisperx align skipped: {e}")
             return result
 
         except Exception as e:
@@ -730,14 +764,15 @@ class Diarizer:
             log("DIAR", "CUDA not available, running on CPU")
 
         self.buffer = bytearray()
-        self.buffer_max = DIAR_BUFFER_SECONDS * 16000 * 2
+        _buf_s = int(os.environ.get('DIAR_BUFFER_SECONDS', str(DIAR_BUFFER_SECONDS)) or DIAR_BUFFER_SECONDS)
+        self.buffer_max = _buf_s * 16000 * 2
         self.last_diarize_time = 0
         self.speaker_map = {}
         self.speaker_count = 0
         self.current_speaker = "SPEAKER_00"
         self._has_result = False
         self._cached_segments = [(0, 999, "SPEAKER_00")]
-        log("DIAR", f"Ready (16s rolling buffer, diarize every {DIARIZE_INTERVAL}s)")
+        log("DIAR", f"Ready ({_buf_s}s rolling buffer, diarize every {DIARIZE_INTERVAL}s)")
 
     def add_audio(self, pcm_bytes):
         """Add audio to the rolling buffer."""
@@ -873,6 +908,29 @@ class Diarizer:
         ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
         best, best_score = ranked[0]
         if len(ranked) > 1 and ranked[1][1] >= max(0.5, best_score * 0.35):
+            return "MULTIPLE", True
+        return best, False
+
+    def get_speaker_for_words(self, words, segments=None):
+        """Word-count voting: each word's time-center votes for the diarization
+        speaker covering it. Returns (speaker, is_multiple) — MULTIPLE when a
+        second voice takes >=35% of the vote AND >=2 words."""
+        if segments is None:
+            segments = self._cached_segments if self._has_result else [(0, 999, self.current_speaker)]
+        if not words:
+            return self.current_speaker, False
+        votes = {}
+        for t0, t1 in words:
+            mid = (t0 + t1) / 2 if t1 > t0 else t0
+            for start, end, speaker in segments:
+                if start <= mid <= end:
+                    votes[speaker] = votes.get(speaker, 0) + 1
+                    break
+        if not votes:
+            return self.current_speaker, False
+        ranked = sorted(votes.items(), key=lambda kv: kv[1], reverse=True)
+        best, best_n = ranked[0]
+        if len(ranked) > 1 and ranked[1][1] >= max(2, best_n * 0.35):
             return "MULTIPLE", True
         return best, False
 
@@ -1718,11 +1776,15 @@ def main():
                             log("TTS", f"Echo suppressed (own voice): {text[:60]}")
                             continue
 
-                    # Match speaker by overlap with the segment's full time range
+                    # Match speaker: word-voting when word timestamps exist,
+                    # else full-range overlap scoring
                     speaker_label = "SPEAKER_00"
                     if diarizer and speaker_segments:
-                        speaker_label, _multi = diarizer.get_speaker_for_range(
-                            seg['start'], seg.get('end', seg['start']), speaker_segments)
+                        if seg.get('words'):
+                            speaker_label, _multi = diarizer.get_speaker_for_words(seg['words'], speaker_segments)
+                        else:
+                            speaker_label, _multi = diarizer.get_speaker_for_range(
+                                seg['start'], seg.get('end', seg['start']), speaker_segments)
 
                     speaker_names = get_speaker_names()
                     display_name = format_speaker(speaker_label, speaker_names)
@@ -1768,6 +1830,17 @@ def main():
                         now = time.time()
                         if (now - last_think_time) >= THINK_INTERVAL:
                             recent = '\n'.join(transcript_buffer[-10:])
+                            # Per-block speaker overrides: show the LLM the corrected
+                            # names (same keys the dashboard dropdowns persist)
+                            _ovr = load_json(BLOCK_SPEAKERS_FILE, {})
+                            if _ovr:
+                                _fixed = []
+                                for _ln in recent.split('\n'):
+                                    _m = re.match(r'^(\S+?): (.*)$', _ln)
+                                    if _m and _m.group(1) + '::' + _m.group(2)[:60] in _ovr:
+                                        _ln = format_speaker(_ovr[_m.group(1) + '::' + _m.group(2)[:60]]) + ': ' + _m.group(2)
+                                    _fixed.append(_ln)
+                                recent = '\n'.join(_fixed)
                             log("LLM", "Agent name detected — checking..." if named
                                 else "Follow-up window — checking...")
                             response = thinker.think(recent, follow_up=not named)
