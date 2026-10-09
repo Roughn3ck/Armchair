@@ -12,6 +12,7 @@ PREWARM_FILE = '/tmp/armchair/tts_prewarm.txt'
 APPLY_FILE = '/tmp/armchair/apply_settings.txt'
 SPEAKER_NAMES_FILE = '/tmp/armchair/speaker_names.json'
 DETECTED_SPEAKERS_FILE = '/tmp/armchair/detected_speakers.json'
+BLOCK_SPEAKERS_FILE = '/tmp/armchair/block_speakers.json'
 AGENT_CONFIG_FILE = '/tmp/armchair/agent_config.json'
 
 # Serve static files (dashboard assets) from the script directory
@@ -130,6 +131,12 @@ class ArmchairHandler(http.server.SimpleHTTPRequestHandler):
                     detected_speakers = json.load(f)
             except: pass
 
+            block_speakers = {}
+            try:
+                with open(BLOCK_SPEAKERS_FILE, 'r') as f:
+                    block_speakers = json.load(f)
+            except: pass
+
             agent_config = {}
             try:
                 with open(AGENT_CONFIG_FILE, 'r') as f:
@@ -142,6 +149,7 @@ class ArmchairHandler(http.server.SimpleHTTPRequestHandler):
                 'mode': current_mode,
                 'speaker_names': speaker_names,
                 'detected_speakers': detected_speakers,
+                'block_speakers': block_speakers,
                 'agent_config': agent_config,
                 'ui_version': _ui_version(),
                 'time': time.strftime('%H:%M:%S')
@@ -203,6 +211,29 @@ class ArmchairHandler(http.server.SimpleHTTPRequestHandler):
                     json.dump(names, f)
                 print(f'[DASHBOARD] Speaker names updated: {names}')
                 self._send_json({'status': 'ok', 'names': names})
+            except Exception as e:
+                self._send_json({'error': str(e)}, 500)
+
+        elif self.path == '/api/block-speaker':
+            # Per-transcript-block speaker override (key = "speaker::text-head").
+            # Empty speaker clears the override.
+            body = self._read_body()
+            try:
+                data = json.loads(body)
+                key = data.get('key', '')
+                speaker = data.get('speaker', '')
+                overrides = {}
+                try:
+                    with open(BLOCK_SPEAKERS_FILE, 'r') as f:
+                        overrides = json.load(f)
+                except: pass
+                if key and speaker:
+                    overrides[key] = speaker
+                elif key:
+                    overrides.pop(key, None)
+                with open(BLOCK_SPEAKERS_FILE, 'w') as f:
+                    json.dump(overrides, f)
+                self._send_json({'status': 'ok', 'overrides': overrides})
             except Exception as e:
                 self._send_json({'error': str(e)}, 500)
 

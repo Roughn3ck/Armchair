@@ -260,6 +260,8 @@ def get_agent_config():
 
 
 def format_speaker(speaker_id, names=None):
+    if speaker_id == "MULTIPLE":
+        return "Multiple"
     if names and speaker_id in names and names[speaker_id]:
         return names[speaker_id]
     return speaker_id
@@ -852,6 +854,27 @@ class Diarizer:
             if start <= t <= end:
                 return speaker
         return self.current_speaker
+
+    def get_speaker_for_range(self, t_start, t_end, segments=None):
+        """Score speakers by time-range overlap with [t_start, t_end].
+        Returns (speaker, is_multiple): the strongest-overlap speaker, or
+        MULTIPLE when a second voice covers >=35% of the winner AND >=0.5s —
+        blocks genuinely shared by two speakers get flagged instead of
+        misattributed to whoever was talking at the start instant."""
+        if segments is None:
+            segments = self._cached_segments if self._has_result else [(0, 999, self.current_speaker)]
+        scores = {}
+        for start, end, speaker in segments:
+            overlap = max(0.0, min(end, t_end) - max(start, t_start))
+            if overlap > 0:
+                scores[speaker] = scores.get(speaker, 0) + overlap
+        if not scores:
+            return self.get_speaker_for_time(t_start, segments), False
+        ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+        best, best_score = ranked[0]
+        if len(ranked) > 1 and ranked[1][1] >= max(0.5, best_score * 0.35):
+            return "MULTIPLE", True
+        return best, False
 
 
 # ============================================================
@@ -1695,10 +1718,11 @@ def main():
                             log("TTS", f"Echo suppressed (own voice): {text[:60]}")
                             continue
 
-                    # Match speaker using timestamp
+                    # Match speaker by overlap with the segment's full time range
                     speaker_label = "SPEAKER_00"
                     if diarizer and speaker_segments:
-                        speaker_label = diarizer.get_speaker_for_time(seg['start'], speaker_segments)
+                        speaker_label, _multi = diarizer.get_speaker_for_range(
+                            seg['start'], seg.get('end', seg['start']), speaker_segments)
 
                     speaker_names = get_speaker_names()
                     display_name = format_speaker(speaker_label, speaker_names)

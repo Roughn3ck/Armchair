@@ -278,6 +278,7 @@ body {
 <script>
 let lastTranscript = '';
 let knownSpeakers = {};
+let blockSpeakers = {};
 let agentConfig = {};
 let currentMode = 'listen';
 let providerTouched = false;
@@ -354,6 +355,20 @@ function onEngineChange() {
     document.getElementById('rowReference').style.display = engine === 'chatterbox' ? '' : 'none';
 }
 document.getElementById('cfgEngine').addEventListener('change', onEngineChange);
+
+// Per-block speaker override: delegated change handler for transcript dropdowns
+document.getElementById('transcript').addEventListener('change', (e) => {
+    if (e.target && e.target.classList.contains('block-speaker')) {
+        const key = e.target.getAttribute('data-key');
+        const val = e.target.value;
+        blockSpeakers[key] = val;
+        fetch('/api/block-speaker', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({key: key, speaker: val})
+        }).catch(() => {});
+    }
+});
 
 // ===== SETTINGS PANEL =====
 function toggleSettings() {
@@ -520,6 +535,25 @@ function prewarmEngine() {
     }).catch(() => {});
 }
 
+function speakerBlockHtml(speaker, text, agentName) {
+    const isAgent = speaker === agentName;
+    const speakerClass = isAgent ? 'agent' : 'speaker';
+    const key = speaker + '::' + text.slice(0, 60);
+    const eff = blockSpeakers[key] || speaker;
+    const displayName = eff === 'MULTIPLE' ? 'Multiple' : (knownSpeakers[eff] || eff);
+    const label = `<span class="${speakerClass}">${displayName}:</span> ${text}`;
+    if (isAgent) return label;
+    const ids = Object.keys(knownSpeakers).sort();
+    if (eff !== 'MULTIPLE' && !ids.includes(eff)) ids.push(eff);
+    const opts = ids.map(s => {
+        const lbl = s === 'MULTIPLE' ? 'Multiple' : (knownSpeakers[s] || s);
+        const sel = (s === eff) ? ' selected' : '';
+        return `<option value="${s}"${sel}>${lbl}</option>`;
+    }).join('') + `<option value="MULTIPLE"${eff === 'MULTIPLE' ? ' selected' : ''}>Multiple</option>`;
+    const safeKey = key.replace(/"/g, '&quot;');
+    return `<select class="block-speaker" data-key="${safeKey}" style="font-size:11px;color:inherit;background:rgba(255,255,255,0.06);border:1px solid #555;border-radius:3px;padding:0 2px;margin-right:4px;vertical-align:baseline;">${opts}</select>` + label;
+}
+
 function saveSpeakerName(speakerId, name) {
     knownSpeakers[speakerId] = name;
     fetch('/api/speaker-names', {
@@ -536,12 +570,7 @@ function saveSpeakerName(speakerId, name) {
             if (match) return `<span class="timestamp">${match[1]}</span>`;
             match = line.match(/^(\S+?): (.*)$/);
             if (match) {
-                const speaker = match[1];
-                const text = match[2];
-                const isAgent = speaker === agentName;
-                const speakerClass = isAgent ? 'agent' : 'speaker';
-                const displayName = knownSpeakers[speaker] || speaker;
-                return `<span class="${speakerClass}">${displayName}:</span> ${text}`;
+                return speakerBlockHtml(match[1], match[2], agentName);
             }
             return line;
         }).join('\n');
@@ -653,6 +682,10 @@ async function update() {
             updateSpeakerRows();
         }
 
+        if (data.block_speakers) {
+            blockSpeakers = data.block_speakers;
+        }
+
         if (data.transcript && data.transcript !== lastTranscript) {
             const isNew = lastTranscript !== '';
             lastTranscript = data.transcript;
@@ -666,12 +699,7 @@ async function update() {
                 }
                 match = line.match(/^(\S+?): (.*)$/);
                 if (match) {
-                    const speaker = match[1];
-                    const text = match[2];
-                    const isAgent = speaker === agentName;
-                    const speakerClass = isAgent ? 'agent' : 'speaker';
-                    const displayName = knownSpeakers[speaker] || speaker;
-                    return `<span class="${speakerClass}">${displayName}:</span> ${text}`;
+                    return speakerBlockHtml(match[1], match[2], agentName);
                 }
                 return line;
             }).join('\n');
